@@ -1,0 +1,37 @@
+# PlatformIO
+.pio/
+.pioenvs/
+.piolibdeps/
+
+# IDE
+.vscode/
+.idea/
+
+# Build artifacts
+*.o
+*.a
+*.elf
+*.bin
+*.hex
+
+# Windows
+nul
+Thumbs.db
+desktop.ini
+
+# Mac
+.DS_Store
+
+# Temporary files
+*.tmp
+*.log
+
+# Separate git repos
+fieldlink-dashboard/
+
+# Test/scratch projects
+esp32_wifi_mqtt_test/
+esp_clean_test/
+
+# Claude Code
+.claude/

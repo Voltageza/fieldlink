@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>FieldLink Pump Controller</title>
+  <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+  <style>
+    :root {
+      --bg-primary: #0a0e14;
+      --bg-secondary: #111821;
+      --bg-card: #151c28;
+      --border-color: #1e2a3a;
+      --text-primary: #e4e8ef;
+      --text-secondary: #6b7a8f;
+      --text-muted: #3d4a5c;
+      --accent-cyan: #00d4ff;
+      --status-running: #00ff88;
+      --status-stopped: #6b7a8f;
+      --status-fault: #ff4757;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'JetBrains Mono', monospace;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      min-height: 100vh;
+    }
+    body::before {
+      content: '';
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background-image:
+        linear-gradient(rgba(0, 212, 255, 0.03) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(0, 212, 255, 0.03) 1px, transparent 1px);
+      background-size: 50px 50px;
+      pointer-events: none;
+    }
+    .container { max-width: 1200px; margin: 0 auto; padding: 20px; position: relative; z-index: 1; }
+    .header {
+      display: flex; justify-content: space-between; align-items: center;
+      margin-bottom: 24px; padding-bottom: 20px; border-bottom: 1px solid var(--border-color);
+    }
+    .logo { display: flex; align-items: center; gap: 12px; }
+    .logo-icon {
+      width: 42px; height: 42px;
+      background: linear-gradient(135deg, var(--accent-cyan) 0%, #0088aa 100%);
+      border-radius: 10px; display: flex; align-items: center; justify-content: center;
+      font-family: 'Chakra Petch', sans-serif; font-weight: 700; font-size: 18px;
+      color: var(--bg-primary); box-shadow: 0 4px 20px rgba(0, 212, 255, 0.3);
+    }
+    .logo-text { font-family: 'Chakra Petch', sans-serif; font-size: 24px; font-weight: 700; }
+    .logo-text span { color: var(--accent-cyan); }
+    .device-id {
+      font-size: 11px; color: var(--text-secondary); margin-top: 2px;
+      font-family: 'JetBrains Mono', monospace;
+    }
+    .header-right { display: flex; align-items: center; gap: 16px; }
+    .connection-status {
+      display: flex; align-items: center; gap: 8px; padding: 8px 14px;
+      background: var(--bg-card); border: 1px solid var(--border-color);
+      border-radius: 6px; font-size: 12px;
+    }
+    .status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--status-fault); }
+    .status-dot.connected { background: var(--status-running); box-shadow: 0 0 10px var(--status-running); }
+    .grid { display: grid; grid-template-columns: 1fr 280px; gap: 20px; }
+    .card {
+      background: var(--bg-card); border: 1px solid var(--border-color);
+      border-radius: 12px; padding: 20px; margin-bottom: 20px;
+    }
+    .card-title {
+      font-family: 'Chakra Petch', sans-serif; font-size: 12px; font-weight: 600;
+      text-transform: uppercase; letter-spacing: 1.5px; color: var(--text-secondary);
+      margin-bottom: 16px;
+    }
+    .state-display { text-align: center; padding: 30px 16px; }
+    .state-indicator {
+      display: inline-flex; align-items: center; gap: 14px; padding: 16px 40px;
+      border-radius: 12px; background: var(--bg-secondary); border: 2px solid var(--border-color);
+    }
+    .state-indicator.running { border-color: var(--status-running); box-shadow: 0 0 30px rgba(0, 255, 136, 0.2); }
+    .state-indicator.fault { border-color: var(--status-fault); box-shadow: 0 0 30px rgba(255, 71, 87, 0.3); animation: pulse 1.5s infinite; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.7; } }
+    .state-icon { width: 20px; height: 20px; border-radius: 50%; }
+    .state-icon.running { background: var(--status-running); box-shadow: 0 0 15px var(--status-running); }
+    .state-icon.stopped { background: var(--status-stopped); }
+    .state-icon.fault { background: var(--status-fault); box-shadow: 0 0 15px var(--status-fault); }
+    .state-text { font-family: 'Chakra Petch', sans-serif; font-size: 28px; font-weight: 700; letter-spacing: 3px; }
+    .state-text.running { color: var(--status-running); }
+    .state-text.stopped { color: var(--status-stopped); }
+    .state-text.fault { color: var(--status-fault); }
+    .current-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+    .current-card {
+      background: var(--bg-secondary); border: 1px solid var(--border-color);
+      border-radius: 10px; padding: 20px; text-align: center;
+    }
+    .current-label { font-size: 12px; color: var(--text-secondary); margin-bottom: 6px; }
+    .current-value { font-size: 36px; font-weight: 600; color: var(--accent-cyan); line-height: 1; margin-bottom: 4px; }
+    .current-unit { font-size: 12px; color: var(--text-muted); }
+    .controls { display: flex; flex-direction: column; gap: 10px; }
+    .btn {
+      font-family: 'Chakra Petch', sans-serif; font-size: 14px; font-weight: 600;
+      letter-spacing: 1.5px; padding: 14px 20px; border: none; border-radius: 10px;
+      cursor: pointer; text-transform: uppercase; transition: all 0.2s;
+    }
+    .btn:hover { transform: translateY(-2px); }
+    .btn-start { background: linear-gradient(135deg, #00aa66, #00ff88); color: var(--bg-primary); }
+    .btn-stop { background: linear-gradient(135deg, #cc3344, #ff4757); color: white; }
+    .btn-reset { background: var(--bg-secondary); color: var(--text-primary); border: 1px solid var(--border-color); }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+    .status-list { display: flex; flex-direction: column; gap: 12px; }
+    .status-item {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 12px; background: var(--bg-secondary); border-radius: 8px;
+    }
+    .status-label { font-size: 12px; color: var(--text-secondary); }
+    .status-badge {
+      padding: 3px 8px; border-radius: 4px; font-size: 10px; font-weight: 600;
+      text-transform: uppercase;
+    }
+    .status-badge.online { background: rgba(0, 255, 136, 0.15); color: var(--status-running); }
+    .status-badge.offline { background: rgba(255, 71, 87, 0.15); color: var(--status-fault); }
+    .status-badge.active { background: rgba(0, 212, 255, 0.15); color: var(--accent-cyan); }
+    .status-badge.inactive { background: rgba(107, 122, 143, 0.15); color: var(--text-secondary); }
+    .uptime-display { text-align: center; padding: 16px; }
+    .uptime-value { font-size: 28px; font-weight: 500; letter-spacing: 2px; }
+    .uptime-label { font-size: 10px; color: var(--text-muted); margin-top: 6px; }
+    .fault-banner {
+      display: none; background: rgba(255, 71, 87, 0.15); border: 1px solid var(--status-fault);
+      border-radius: 10px; padding: 12px; text-align: center; margin-bottom: 20px;
+    }
+    .fault-banner.visible { display: block; }
+    .fault-banner-text { color: var(--status-fault); font-family: 'Chakra Petch', sans-serif; font-weight: 600; font-size: 13px; }
+
+    /* Landing page styles */
+    .landing-page {
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      min-height: 80vh; text-align: center; padding: 40px 20px;
+    }
+    .landing-page .logo-icon { width: 80px; height: 80px; font-size: 32px; margin-bottom: 20px; }
+    .landing-page h1 { font-family: 'Chakra Petch', sans-serif; font-size: 48px; margin-bottom: 10px; }
+    .landing-page h1 span { color: var(--accent-cyan); }
+    .landing-page .tagline { color: var(--text-secondary); font-size: 16px; margin-bottom: 40px; }
+    .device-input-container {
+      background: var(--bg-card); border: 1px solid var(--border-color);
+      border-radius: 12px; padding: 30px; max-width: 400px; width: 100%;
+    }
+    .device-input-container h2 {
+      font-family: 'Chakra Petch', sans-serif; font-size: 16px; margin-bottom: 20px;
+      color: var(--text-primary);
+    }
+    .device-input {
+      width: 100%; padding: 14px 16px; font-size: 18px; text-align: center;
+      background: var(--bg-secondary); border: 2px solid var(--border-color);
+      border-radius: 8px; color: var(--text-primary); font-family: 'JetBrains Mono', monospace;
+      letter-spacing: 2px; text-transform: uppercase;
+    }
+    .device-input:focus { outline: none; border-color: var(--accent-cyan); }
+    .device-input::placeholder { color: var(--text-muted); letter-spacing: 0; text-transform: none; }
+    .btn-connect {
+      width: 100%; margin-top: 16px; background: linear-gradient(135deg, var(--accent-cyan), #0088aa);
+      color: var(--bg-primary);
+    }
+    .device-input-hint {
+      font-size: 11px; color: var(--text-muted); margin-top: 12px;
+    }
+    .last-seen { font-size: 11px; color: var(--text-muted); margin-top: 8px; }
+    .last-seen.stale { color: var(--status-fault); }
+
+    @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+    @media (max-width: 600px) {
+      .current-grid { grid-template-columns: 1fr; }
+      .landing-page h1 { font-size: 32px; }
+    }
+  </style>
+</head>
+<body>
+  <!-- Landing Page (shown when no device ID) -->
+  <div class="container landing-page" id="landingPage">
+    <div class="logo-icon">FL</div>
+    <h1>Field<span>Link</span></h1>
+    <p class="tagline">Industrial Pump Monitoring & Control</p>
+    <div class="device-input-container">
+      <h2>Enter Your Device ID</h2>
+      <input type="text" class="device-input" id="deviceIdInput" placeholder="e.g., FL-A1B2C3" maxlength="12">
+      <button class="btn btn-connect" onclick="connectToDevice()">Connect</button>
+      <p class="device-input-hint">Find your Device ID on the label of your FieldLink controller</p>
+    </div>
+  </div>
+
+  <!-- Dashboard (shown when device ID is provided) -->
+  <div class="container" id="dashboard" style="display: none;">
+    <header class="header">
+      <div class="logo">
+        <div class="logo-icon">FL</div>
+        <div>
+          <div class="logo-text">Field<span>Link</span></div>
+          <div class="device-id" id="displayDeviceId">Device: ---</div>
+        </div>
+      </div>
+      <div class="header-right">
+        <div class="connection-status">
+          <div class="status-dot" id="mqttStatus"></div>
+          <span id="mqttStatusText">Connecting...</span>
+        </div>
+      </div>
+    </header>
+    <div class="fault-banner" id="faultBanner">
+      <div class="fault-banner-text" id="faultText">FAULT DETECTED</div>
+    </div>
+    <div class="grid">
+      <div class="main">
+        <div class="card">
+          <div class="card-title">Pump Status</div>
+          <div class="state-display">
+            <div class="state-indicator stopped" id="stateIndicator">
+              <div class="state-icon stopped" id="stateIcon"></div>
+              <div class="state-text stopped" id="stateText">---</div>
+            </div>
+          </div>
+          <div class="last-seen" id="lastSeen">Waiting for data...</div>
+        </div>
+        <div class="card">
+          <div class="card-title">Phase Currents</div>
+          <div class="current-grid">
+            <div class="current-card">
+              <div class="current-label">Phase A</div>
+              <div class="current-value" id="currentA">--</div>
+              <div class="current-unit">Amps</div>
+            </div>
+            <div class="current-card">
+              <div class="current-label">Phase B</div>
+              <div class="current-value" id="currentB">--</div>
+              <div class="current-unit">Amps</div>
+            </div>
+            <div class="current-card">
+              <div class="current-label">Phase C</div>
+              <div class="current-value" id="currentC">--</div>
+              <div class="current-unit">Amps</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="side">
+        <div class="card">
+          <div class="card-title">Controls</div>
+          <div class="controls">
+            <button class="btn btn-start" id="btnStart" onclick="sendCommand('START')">Start Pump</button>
+            <button class="btn btn-stop" id="btnStop" onclick="sendCommand('STOP')">Stop Pump</button>
+            <button class="btn btn-reset" id="btnReset" onclick="sendCommand('RESET')">Reset Fault</button>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-title">System Info</div>
+          <div class="status-list">
+            <div class="status-item">
+              <span class="status-label">Sensor</span>
+              <span class="status-badge offline" id="sensorStatus">OFFLINE</span>
+            </div>
+            <div class="status-item">
+              <span class="status-label">Command</span>
+              <span class="status-badge inactive" id="cmdStatus">INACTIVE</span>
+            </div>
+          </div>
+          <div class="uptime-display">
+            <div class="uptime-value" id="uptime">--:--:--</div>
+            <div class="uptime-label">DEVICE UPTIME</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // HiveMQ Cloud Configuration
+    const MQTT_BROKER = 'wss://a5c598acdbdc4abba053799bcefb73d0.s1.eu.hivemq.cloud:8884/mqtt';
+    const MQTT_USER = 'fieldlogicuser1';
+    const MQTT_PASS = '@Shadow69';
+
+    let client = null;
+    let isConnected = false;
+    let deviceId = null;
+    let lastDataTime = null;
+    let staleCheckInterval = null;
+
+    // Get device ID from URL parameter
+    function getDeviceIdFromUrl() {
+      const params = new URLSearchParams(window.location.search);
+      return params.get('device') || params.get('id') || params.get('d');
+    }
+
+    // Update URL with device ID
+    function updateUrl(id) {
+      const url = new URL(window.location);
+      url.searchParams.set('device', id);
+      window.history.pushState({}, '', url);
+    }
+
+    // Connect to device from landing page
+    function connectToDevice() {
+      const input = document.getElementById('deviceIdInput');
+      const id = input.value.trim().toUpperCase();
+      if (id.length >= 4) {
+        updateUrl(id);
+        initDashboard(id);
+      } else {
+        input.style.borderColor = 'var(--status-fault)';
+        setTimeout(() => input.style.borderColor = 'var(--border-color)', 2000);
+      }
+    }
+
+    // Handle Enter key on input
+    document.addEventListener('DOMContentLoaded', () => {
+      const input = document.getElementById('deviceIdInput');
+      if (input) {
+        input.addEventListener('keypress', (e) => {
+          if (e.key === 'Enter') connectToDevice();
+        });
+      }
+
+      // Check for device ID in URL
+      const urlDeviceId = getDeviceIdFromUrl();
+      if (urlDeviceId) {
+        initDashboard(urlDeviceId);
+      }
+    });
+
+    // Initialize dashboard with device ID
+    function initDashboard(id) {
+      deviceId = id.toUpperCase();
+      document.getElementById('landingPage').style.display = 'none';
+      document.getElementById('dashboard').style.display = 'block';
+      document.getElementById('displayDeviceId').textContent = 'Device: ' + deviceId;
+      document.title = 'FieldLink - ' + deviceId;
+
+      // Start stale data checker
+      staleCheckInterval = setInterval(checkStaleData, 5000);
+
+      connect();
+    }
+
+    // Check if data is stale (no update in 10 seconds)
+    function checkStaleData() {
+      const lastSeenEl = document.getElementById('lastSeen');
+      if (!lastDataTime) {
+        lastSeenEl.textContent = 'Waiting for data...';
+        lastSeenEl.classList.remove('stale');
+        return;
+      }
+
+      const secondsAgo = Math.floor((Date.now() - lastDataTime) / 1000);
+      if (secondsAgo > 10) {
+        lastSeenEl.textContent = `Last data: ${secondsAgo}s ago - Device may be offline`;
+        lastSeenEl.classList.add('stale');
+      } else {
+        lastSeenEl.textContent = 'Live data';
+        lastSeenEl.classList.remove('stale');
+      }
+    }
+
+    const el = {
+      get mqttStatus() { return document.getElementById('mqttStatus'); },
+      get mqttStatusText() { return document.getElementById('mqttStatusText'); },
+      get stateIndicator() { return document.getElementById('stateIndicator'); },
+      get stateIcon() { return document.getElementById('stateIcon'); },
+      get stateText() { return document.getElementById('stateText'); },
+      get currentA() { return document.getElementById('currentA'); },
+      get currentB() { return document.getElementById('currentB'); },
+      get currentC() { return document.getElementById('currentC'); },
+      get sensorStatus() { return document.getElementById('sensorStatus'); },
+      get cmdStatus() { return document.getElementById('cmdStatus'); },
+      get uptime() { return document.getElementById('uptime'); },
+      get faultBanner() { return document.getElementById('faultBanner'); },
+      get faultText() { return document.getElementById('faultText'); },
+      get btnStart() { return document.getElementById('btnStart'); },
+      get btnReset() { return document.getElementById('btnReset'); },
+      get lastSeen() { return document.getElementById('lastSeen'); }
+    };
+
+    function formatUptime(s) {
+      const h = Math.floor(s / 3600);
+      const m = Math.floor((s % 3600) / 60);
+      const sec = s % 60;
+      return `${h.toString().padStart(2,'0')}:${m.toString().padStart(2,'0')}:${sec.toString().padStart(2,'0')}`;
+    }
+
+    function updateState(state) {
+      const s = state.toLowerCase();
+      el.stateIndicator.className = 'state-indicator ' + s;
+      el.stateIcon.className = 'state-icon ' + s;
+      el.stateText.className = 'state-text ' + s;
+      el.stateText.textContent = state;
+      el.faultBanner.classList.toggle('visible', s === 'fault');
+      el.btnStart.disabled = s === 'fault';
+      el.btnReset.disabled = s !== 'fault';
+    }
+
+    function updateTelemetry(data) {
+      try {
+        const t = JSON.parse(data);
+        lastDataTime = Date.now();
+
+        el.currentA.textContent = parseFloat(t.Ia).toFixed(1);
+        el.currentB.textContent = parseFloat(t.Ib).toFixed(1);
+        el.currentC.textContent = parseFloat(t.Ic).toFixed(1);
+        updateState(t.state);
+        if (t.fault) el.faultText.textContent = 'FAULT: ' + t.fault;
+        el.sensorStatus.textContent = t.sensor ? 'ONLINE' : 'OFFLINE';
+        el.sensorStatus.className = 'status-badge ' + (t.sensor ? 'online' : 'offline');
+        el.cmdStatus.textContent = t.cmd ? 'ACTIVE' : 'INACTIVE';
+        el.cmdStatus.className = 'status-badge ' + (t.cmd ? 'active' : 'inactive');
+        el.uptime.textContent = formatUptime(t.uptime);
+
+        // Update last seen
+        el.lastSeen.textContent = 'Live data';
+        el.lastSeen.classList.remove('stale');
+      } catch (e) {
+        console.error('Parse error:', e);
+      }
+    }
+
+    function sendCommand(cmd) {
+      if (client && isConnected && deviceId) {
+        const topic = `fieldlink/${deviceId}/command`;
+        client.publish(topic, cmd);
+        console.log('Sent to', topic + ':', cmd);
+      } else {
+        alert('Not connected to device');
+      }
+    }
+
+    function connect() {
+      if (!deviceId) return;
+
+      el.mqttStatusText.textContent = 'Connecting...';
+
+      client = mqtt.connect(MQTT_BROKER, {
+        username: MQTT_USER,
+        password: MQTT_PASS,
+        clientId: 'dashboard_' + deviceId + '_' + Math.random().toString(16).substr(2, 8),
+        reconnectPeriod: 5000
+      });
+
+      client.on('connect', () => {
+        isConnected = true;
+        el.mqttStatus.classList.add('connected');
+        el.mqttStatusText.textContent = 'Connected';
+
+        // Subscribe to device-specific topic
+        const topic = `fieldlink/${deviceId}/telemetry`;
+        client.subscribe(topic, (err) => {
+          if (!err) {
+            console.log('Subscribed to:', topic);
+          }
+        });
+      });
+
+      client.on('message', (topic, msg) => {
+        if (topic === `fieldlink/${deviceId}/telemetry`) {
+          updateTelemetry(msg.toString());
+        }
+      });
+
+      client.on('close', () => {
+        isConnected = false;
+        el.mqttStatus.classList.remove('connected');
+        el.mqttStatusText.textContent = 'Disconnected';
+      });
+
+      client.on('reconnect', () => {
+        el.mqttStatusText.textContent = 'Reconnecting...';
+      });
+
+      client.on('error', (err) => {
+        console.error('MQTT Error:', err);
+        el.mqttStatusText.textContent = 'Error';
+      });
+    }
+  </script>
+</body>
+</html>
