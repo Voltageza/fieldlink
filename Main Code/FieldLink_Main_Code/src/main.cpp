@@ -29,7 +29,7 @@
 /* ================= USER CONFIG ================= */
 
 #define FW_NAME    "ESP32 Pump Controller"
-#define FW_VERSION "1.6.0"
+#define FW_VERSION "1.7.0"
 
 // Captive portal timeout (seconds) - how long to wait for user to configure WiFi
 #define PORTAL_TIMEOUT_S    180
@@ -61,11 +61,18 @@
 #define MAX_MODBUS_FAILURES    5
 #define FAULT_AUTO_RESET_MS    0
 
-// HiveMQ Cloud Settings
-#define MQTT_HOST "a5c598acdbdc4abba053799bcefb73d0.s1.eu.hivemq.cloud"
-#define MQTT_PORT 8883
-#define MQTT_USER "fieldlogicuser1"
-#define MQTT_PASS "@Shadow69"
+// Default MQTT Broker (HiveMQ Cloud)
+#define DEFAULT_MQTT_HOST "a5c598acdbdc4abba053799bcefb73d0.s1.eu.hivemq.cloud"
+#define DEFAULT_MQTT_PORT 8883
+#define DEFAULT_MQTT_USER "fieldlogicuser1"
+#define DEFAULT_MQTT_PASS "@Shadow69"
+
+// Configurable MQTT settings (stored in NVS)
+char mqtt_host[128] = "";
+uint16_t mqtt_port = DEFAULT_MQTT_PORT;
+char mqtt_user[64] = "";
+char mqtt_pass[64] = "";
+bool mqtt_use_tls = true;
 
 // Preferences for non-WiFi settings
 Preferences preferences;
@@ -118,9 +125,10 @@ char TOPIC_SUBSCRIBE[64] = "";  // Wildcard for subscriptions
 
 /* =============================================== */
 
-// Use secure client for HiveMQ Cloud
-WiFiClientSecure espClient;
-PubSubClient mqtt(espClient);
+// MQTT clients (TLS and non-TLS)
+WiFiClientSecure espClientSecure;
+WiFiClient espClientInsecure;
+PubSubClient mqtt;
 ModbusMaster node;
 HardwareSerial RS485(2);
 
@@ -859,17 +867,22 @@ void handleSerialConfig() {
 bool connectMQTT() {
   if (!wifiConnected) return false;
 
-  Serial.printf("Connecting to MQTT: %s:%d\n", MQTT_HOST, MQTT_PORT);
+  Serial.printf("Connecting to MQTT: %s:%d (TLS: %s)\n", mqtt_host, mqtt_port, mqtt_use_tls ? "yes" : "no");
 
-  // Configure TLS - skip certificate verification for simplicity
-  espClient.setInsecure();
+  // Configure client based on TLS setting
+  if (mqtt_use_tls) {
+    espClientSecure.setInsecure();  // Skip certificate verification
+    mqtt.setClient(espClientSecure);
+  } else {
+    mqtt.setClient(espClientInsecure);
+  }
 
-  mqtt.setServer(MQTT_HOST, MQTT_PORT);
+  mqtt.setServer(mqtt_host, mqtt_port);
   mqtt.setCallback(mqttCallback);
 
   unsigned long startTime = millis();
   while (!mqtt.connected()) {
-    if (mqtt.connect(DEVICE_ID, MQTT_USER, MQTT_PASS)) {
+    if (mqtt.connect(DEVICE_ID, mqtt_user, mqtt_pass)) {
       mqtt.subscribe(TOPIC_SUBSCRIBE);  // Wildcard subscription
       Serial.printf("MQTT connected as %s!\n", DEVICE_ID);
       Serial.printf("Subscribed to: %s\n", TOPIC_SUBSCRIBE);
@@ -915,7 +928,7 @@ void reconnectMQTT() {
       lastMqttRetry = now;
       Serial.println("Attempting MQTT reconnect...");
 
-      if (mqtt.connect(DEVICE_ID, MQTT_USER, MQTT_PASS)) {
+      if (mqtt.connect(DEVICE_ID, mqtt_user, mqtt_pass)) {
         mqtt.subscribe(TOPIC_SUBSCRIBE);  // Wildcard subscription
         Serial.printf("MQTT reconnected as %s!\n", DEVICE_ID);
         mqttConnected = true;
@@ -955,6 +968,74 @@ void printDeviceInfo() {
   Serial.printf("  Telemetry Topic: %s\n", TOPIC_TELEMETRY);
   Serial.printf("  Command Topic:   %s\n", TOPIC_COMMAND);
   Serial.println("========================================\n");
+}
+
+/* ================= MQTT CONFIG ================= */
+
+void generateDefaultMqttCredentials() {
+  // Generate unique password based on device ID
+  // Format: FL-XXXXXX (where XXXXXX is from MAC)
+  snprintf(mqtt_user, sizeof(mqtt_user), "%s", DEVICE_ID);
+  snprintf(mqtt_pass, sizeof(mqtt_pass), "%s-key", DEVICE_ID);
+}
+
+void loadMqttConfig() {
+  preferences.begin("mqtt", true);  // Read-only
+
+  String host = preferences.getString("host", "");
+  if (host.length() > 0) {
+    strncpy(mqtt_host, host.c_str(), sizeof(mqtt_host) - 1);
+  } else {
+    strncpy(mqtt_host, DEFAULT_MQTT_HOST, sizeof(mqtt_host) - 1);
+  }
+
+  mqtt_port = preferences.getUShort("port", DEFAULT_MQTT_PORT);
+  mqtt_use_tls = preferences.getBool("tls", true);
+
+  String user = preferences.getString("user", "");
+  String pass = preferences.getString("pass", "");
+
+  if (user.length() > 0) {
+    strncpy(mqtt_user, user.c_str(), sizeof(mqtt_user) - 1);
+    strncpy(mqtt_pass, pass.c_str(), sizeof(mqtt_pass) - 1);
+  } else {
+    // Use default shared credentials for backward compatibility
+    strncpy(mqtt_user, DEFAULT_MQTT_USER, sizeof(mqtt_user) - 1);
+    strncpy(mqtt_pass, DEFAULT_MQTT_PASS, sizeof(mqtt_pass) - 1);
+  }
+
+  preferences.end();
+
+  Serial.println("MQTT Config loaded:");
+  Serial.printf("  Host: %s:%d\n", mqtt_host, mqtt_port);
+  Serial.printf("  User: %s\n", mqtt_user);
+  Serial.printf("  TLS: %s\n", mqtt_use_tls ? "yes" : "no");
+}
+
+void saveMqttConfig() {
+  preferences.begin("mqtt", false);  // Read-write
+  preferences.putString("host", mqtt_host);
+  preferences.putUShort("port", mqtt_port);
+  preferences.putString("user", mqtt_user);
+  preferences.putString("pass", mqtt_pass);
+  preferences.putBool("tls", mqtt_use_tls);
+  preferences.end();
+  Serial.println("MQTT Config saved");
+}
+
+void resetMqttConfig() {
+  preferences.begin("mqtt", false);
+  preferences.clear();
+  preferences.end();
+
+  // Reload defaults
+  strncpy(mqtt_host, DEFAULT_MQTT_HOST, sizeof(mqtt_host) - 1);
+  mqtt_port = DEFAULT_MQTT_PORT;
+  strncpy(mqtt_user, DEFAULT_MQTT_USER, sizeof(mqtt_user) - 1);
+  strncpy(mqtt_pass, DEFAULT_MQTT_PASS, sizeof(mqtt_pass) - 1);
+  mqtt_use_tls = true;
+
+  Serial.println("MQTT Config reset to defaults");
 }
 
 /* ================= WEB SERVER ================= */
@@ -1022,6 +1103,164 @@ void setupWebServer() {
     String response;
     serializeJson(doc, response);
     request->send(200, "application/json", response);
+  });
+
+  // API endpoint for MQTT config (GET)
+  server.on("/api/mqtt", HTTP_GET, [](AsyncWebServerRequest *request){
+    StaticJsonDocument<256> doc;
+    doc["host"] = mqtt_host;
+    doc["port"] = mqtt_port;
+    doc["user"] = mqtt_user;
+    doc["pass"] = "********";  // Don't expose password
+    doc["tls"] = mqtt_use_tls;
+    doc["connected"] = mqttConnected;
+    String response;
+    serializeJson(doc, response);
+    request->send(200, "application/json", response);
+  });
+
+  // API endpoint for MQTT config (POST)
+  server.on("/api/mqtt", HTTP_POST, [](AsyncWebServerRequest *request){
+    bool changed = false;
+
+    if (request->hasParam("host", true)) {
+      strncpy(mqtt_host, request->getParam("host", true)->value().c_str(), sizeof(mqtt_host) - 1);
+      changed = true;
+    }
+    if (request->hasParam("port", true)) {
+      mqtt_port = request->getParam("port", true)->value().toInt();
+      changed = true;
+    }
+    if (request->hasParam("user", true)) {
+      strncpy(mqtt_user, request->getParam("user", true)->value().c_str(), sizeof(mqtt_user) - 1);
+      changed = true;
+    }
+    if (request->hasParam("pass", true)) {
+      strncpy(mqtt_pass, request->getParam("pass", true)->value().c_str(), sizeof(mqtt_pass) - 1);
+      changed = true;
+    }
+    if (request->hasParam("tls", true)) {
+      mqtt_use_tls = request->getParam("tls", true)->value() == "true";
+      changed = true;
+    }
+
+    if (changed) {
+      saveMqttConfig();
+      request->send(200, "text/plain", "Config saved. Rebooting...");
+      delay(1000);
+      ESP.restart();
+    } else {
+      request->send(400, "text/plain", "No parameters provided");
+    }
+  });
+
+  // API endpoint to reset MQTT config
+  server.on("/api/mqtt/reset", HTTP_POST, [](AsyncWebServerRequest *request){
+    resetMqttConfig();
+    request->send(200, "text/plain", "Config reset. Rebooting...");
+    delay(1000);
+    ESP.restart();
+  });
+
+  // MQTT configuration page
+  server.on("/config", HTTP_GET, [](AsyncWebServerRequest *request){
+    String html = R"rawliteral(
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>FieldLink - MQTT Config</title>
+  <style>
+    body { font-family: -apple-system, sans-serif; background: #1a1a2e; color: #eee; padding: 20px; }
+    .container { max-width: 400px; margin: 0 auto; }
+    h1 { color: #00d4ff; font-size: 24px; }
+    .card { background: #16213e; border-radius: 12px; padding: 20px; margin: 20px 0; }
+    label { display: block; margin: 15px 0 5px; color: #888; font-size: 12px; text-transform: uppercase; }
+    input, select { width: 100%; padding: 12px; border: 1px solid #333; border-radius: 6px; background: #0f0f23; color: #fff; font-size: 16px; box-sizing: border-box; }
+    input:focus { border-color: #00d4ff; outline: none; }
+    button { width: 100%; padding: 14px; border: none; border-radius: 6px; font-size: 16px; font-weight: bold; cursor: pointer; margin-top: 10px; }
+    .btn-primary { background: #00d4ff; color: #000; }
+    .btn-danger { background: #ff4757; color: #fff; }
+    .btn-secondary { background: #333; color: #fff; }
+    .status { padding: 10px; border-radius: 6px; margin: 10px 0; text-align: center; }
+    .status.connected { background: #00ff8820; color: #00ff88; }
+    .status.disconnected { background: #ff475720; color: #ff4757; }
+    .device-id { font-family: monospace; font-size: 20px; color: #00d4ff; text-align: center; padding: 10px; background: #0f0f23; border-radius: 6px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>FieldLink Config</h1>
+    <div class="device-id" id="deviceId">Loading...</div>
+    <div class="status disconnected" id="mqttStatus">MQTT: Checking...</div>
+
+    <div class="card">
+      <h3>MQTT Broker</h3>
+      <label>Host</label>
+      <input type="text" id="host" placeholder="broker.example.com">
+      <label>Port</label>
+      <input type="number" id="port" value="8883">
+      <label>Username</label>
+      <input type="text" id="user" placeholder="username">
+      <label>Password</label>
+      <input type="password" id="pass" placeholder="password">
+      <label>Use TLS/SSL</label>
+      <select id="tls">
+        <option value="true">Yes (Port 8883)</option>
+        <option value="false">No (Port 1883)</option>
+      </select>
+      <button class="btn-primary" onclick="saveConfig()">Save and Reboot</button>
+      <button class="btn-danger" onclick="resetConfig()">Reset to Defaults</button>
+    </div>
+
+    <div class="card">
+      <button class="btn-secondary" onclick="location.href='/'">Back to Dashboard</button>
+    </div>
+  </div>
+  <script>
+    async function loadConfig() {
+      try {
+        var res = await fetch('/api/mqtt');
+        var cfg = await res.json();
+        document.getElementById('host').value = cfg.host;
+        document.getElementById('port').value = cfg.port;
+        document.getElementById('user').value = cfg.user;
+        document.getElementById('tls').value = cfg.tls ? 'true' : 'false';
+        document.getElementById('mqttStatus').textContent = 'MQTT: ' + (cfg.connected ? 'Connected' : 'Disconnected');
+        document.getElementById('mqttStatus').className = 'status ' + (cfg.connected ? 'connected' : 'disconnected');
+
+        var devRes = await fetch('/api/device');
+        var dev = await devRes.json();
+        document.getElementById('deviceId').textContent = dev.device_id;
+      } catch(e) { console.error(e); }
+    }
+    async function saveConfig() {
+      var data = new URLSearchParams();
+      data.append('host', document.getElementById('host').value);
+      data.append('port', document.getElementById('port').value);
+      data.append('user', document.getElementById('user').value);
+      data.append('pass', document.getElementById('pass').value);
+      data.append('tls', document.getElementById('tls').value);
+      try {
+        var res = await fetch('/api/mqtt', { method: 'POST', body: data });
+        alert(await res.text());
+      } catch(e) { alert('Error: ' + e); }
+    }
+    async function resetConfig() {
+      if (confirm('Reset MQTT config to defaults?')) {
+        try {
+          var res = await fetch('/api/mqtt/reset', { method: 'POST' });
+          alert(await res.text());
+        } catch(e) { alert('Error: ' + e); }
+      }
+    }
+    loadConfig();
+  </script>
+</body>
+</html>
+)rawliteral";
+    request->send(200, "text/html", html);
   });
 
   server.begin();
@@ -1098,6 +1337,9 @@ void setup() {
     Serial.printf("WiFi connected! IP: %s\n", WiFi.localIP().toString().c_str());
     wifiConnected = true;
     configLoaded = true;
+
+    // Load MQTT config from NVS
+    loadMqttConfig();
 
     // Start web server
     setupWebServer();
