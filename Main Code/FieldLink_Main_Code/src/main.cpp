@@ -32,7 +32,8 @@
 /* ================= USER CONFIG ================= */
 
 #define FW_NAME    "ESP32 Pump Controller"
-#define FW_VERSION "1.9.0"
+#define FW_VERSION "2.0.0"
+#define HW_TYPE    "PUMP_ESP32S3"  // Hardware type for firmware management
 
 // Captive portal timeout (seconds) - how long to wait for user to configure WiFi
 #define PORTAL_TIMEOUT_S    180
@@ -514,6 +515,7 @@ void resetFault();
 void triggerFault(FaultType type);
 const char* faultTypeToString(FaultType ft);
 void sendFaultNotification();
+void performRemoteFirmwareUpdate(const char* firmwareUrl);
 
 /* ================= DO DRIVER (TCA9554 I2C) ================= */
 
@@ -651,6 +653,35 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   else if (strcmp(cmd, "STATUS") == 0) {
     lastTelemetryTime = 0;
   }
+  else {
+    // Try parsing as JSON for complex commands
+    StaticJsonDocument<256> doc;
+    DeserializationError error = deserializeJson(doc, cmd);
+
+    if (!error) {
+      const char* command = doc["command"];
+
+      if (command && strcmp(command, "UPDATE_FIRMWARE") == 0) {
+        const char* firmwareUrl = doc["url"];
+
+        if (firmwareUrl) {
+          Serial.printf("Remote firmware update requested: %s\n", firmwareUrl);
+
+          // Stop pump for safety during update
+          startCommand = false;
+          setDO(DO_CONTACTOR_CH, false);
+
+          // Publish update status
+          mqtt.publish(TOPIC_TELEMETRY, "{\"status\":\"updating\"}");
+
+          // Perform update (will restart device on success)
+          performRemoteFirmwareUpdate(firmwareUrl);
+        } else {
+          Serial.println("UPDATE_FIRMWARE command missing 'url' parameter");
+        }
+      }
+    }
+  }
 }
 
 /* ================= STATE ================= */
@@ -692,6 +723,107 @@ void sendFaultNotification() {
     }
   } else {
     Serial.printf("Notification failed, error: %s\n", http.errorToString(httpCode).c_str());
+  }
+
+  http.end();
+}
+
+// Remote firmware update via HTTP download
+void performRemoteFirmwareUpdate(const char* firmwareUrl) {
+  if (!wifiConnected) {
+    Serial.println("Cannot update - WiFi not connected");
+    return;
+  }
+
+  Serial.println("===========================================");
+  Serial.println("REMOTE FIRMWARE UPDATE STARTED");
+  Serial.printf("URL: %s\n", firmwareUrl);
+  Serial.println("===========================================");
+
+  HTTPClient http;
+  http.begin(firmwareUrl);
+
+  int httpCode = http.GET();
+
+  if (httpCode != HTTP_CODE_OK) {
+    Serial.printf("Firmware download failed, HTTP code: %d\n", httpCode);
+    http.end();
+    return;
+  }
+
+  int contentLength = http.getSize();
+  if (contentLength <= 0) {
+    Serial.println("Invalid content length");
+    http.end();
+    return;
+  }
+
+  Serial.printf("Firmware size: %d bytes\n", contentLength);
+
+  bool canBegin = Update.begin(contentLength);
+  if (!canBegin) {
+    Serial.println("Not enough space for OTA");
+    http.end();
+    return;
+  }
+
+  WiFiClient * stream = http.getStreamPtr();
+  size_t written = 0;
+  uint8_t buff[128];
+  int lastProgress = 0;
+
+  Serial.println("Starting download...");
+
+  while (http.connected() && (written < contentLength)) {
+    size_t available = stream->available();
+
+    if (available) {
+      int bytesRead = stream->readBytes(buff, min(available, sizeof(buff)));
+
+      if (bytesRead > 0) {
+        size_t bytesWritten = Update.write(buff, bytesRead);
+
+        if (bytesWritten != bytesRead) {
+          Serial.println("Write error!");
+          Update.abort();
+          http.end();
+          return;
+        }
+
+        written += bytesWritten;
+
+        // Progress reporting
+        int progress = (written * 100) / contentLength;
+        if (progress != lastProgress && progress % 10 == 0) {
+          Serial.printf("Progress: %d%%\n", progress);
+          lastProgress = progress;
+        }
+      }
+    }
+    delay(1);
+  }
+
+  Serial.printf("Downloaded: %d bytes\n", written);
+
+  if (written != contentLength) {
+    Serial.println("Download incomplete!");
+    Update.abort();
+    http.end();
+    return;
+  }
+
+  if (Update.end()) {
+    Serial.println("===========================================");
+    Serial.println("FIRMWARE UPDATE SUCCESS!");
+    Serial.println("Device will restart in 3 seconds...");
+    Serial.println("===========================================");
+
+    http.end();
+    delay(3000);
+    ESP.restart();
+  } else {
+    Serial.println("Update failed!");
+    Update.printError(Serial);
   }
 
   http.end();
@@ -1134,6 +1266,7 @@ void setupWebServer() {
   server.on("/api/device", HTTP_GET, [](AsyncWebServerRequest *request){
     StaticJsonDocument<512> doc;
     doc["device_id"] = DEVICE_ID;
+    doc["hardware_type"] = HW_TYPE;
     doc["firmware"] = FW_VERSION;
     doc["name"] = FW_NAME;
     doc["ip"] = WiFi.localIP().toString();
@@ -1736,6 +1869,8 @@ void loop() {
       doc["mode"] = remoteMode ? "REMOTE" : "LOCAL";
       doc["di"] = diStatus;
       doc["do"] = do_state;
+      doc["hardware_type"] = HW_TYPE;
+      doc["firmware_version"] = FW_VERSION;
 
       char buf[384];
       serializeJson(doc, buf);
