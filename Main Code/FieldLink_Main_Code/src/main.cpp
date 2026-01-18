@@ -26,11 +26,13 @@
 #include <ESPAsyncWebServer.h>
 #include <Wire.h>
 #include <HTTPClient.h>
+#include <ArduinoOTA.h>
+#include <Update.h>
 
 /* ================= USER CONFIG ================= */
 
 #define FW_NAME    "ESP32 Pump Controller"
-#define FW_VERSION "1.8.0"
+#define FW_VERSION "1.9.0"
 
 // Captive portal timeout (seconds) - how long to wait for user to configure WiFi
 #define PORTAL_TIMEOUT_S    180
@@ -1256,6 +1258,7 @@ void setupWebServer() {
     </div>
 
     <div class="card">
+      <button class="btn-secondary" onclick="location.href='/update'">Firmware Update</button>
       <button class="btn-secondary" onclick="location.href='/'">Back to Dashboard</button>
     </div>
   </div>
@@ -1303,6 +1306,197 @@ void setupWebServer() {
 )rawliteral";
     request->send(200, "text/html", html);
   });
+
+  // HTTP OTA Update endpoint
+  server.on("/update", HTTP_GET, [](AsyncWebServerRequest *request){
+    String html = R"rawliteral(
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>FieldLink - Firmware Update</title>
+  <style>
+    body { font-family: -apple-system, sans-serif; background: #1a1a2e; color: #eee; padding: 20px; }
+    .container { max-width: 400px; margin: 0 auto; }
+    h1 { color: #00d4ff; font-size: 24px; }
+    .card { background: #16213e; border-radius: 12px; padding: 20px; margin: 20px 0; }
+    .device-id { font-family: monospace; font-size: 20px; color: #00d4ff; text-align: center; padding: 10px; background: #0f0f23; border-radius: 6px; margin-bottom: 20px; }
+    .version { text-align: center; color: #888; margin-bottom: 20px; }
+    input[type="file"] { width: 100%; padding: 12px; border: 2px dashed #00d4ff; border-radius: 6px; background: #0f0f23; color: #fff; cursor: pointer; }
+    input[type="file"]:hover { background: #1a1a3e; }
+    button { width: 100%; padding: 14px; border: none; border-radius: 6px; font-size: 16px; font-weight: bold; cursor: pointer; margin-top: 10px; }
+    .btn-primary { background: #00d4ff; color: #000; }
+    .btn-secondary { background: #333; color: #fff; }
+    .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+    .progress { width: 100%; height: 30px; background: #0f0f23; border-radius: 6px; margin: 20px 0; overflow: hidden; display: none; }
+    .progress-bar { height: 100%; background: linear-gradient(90deg, #00d4ff, #00ff88); width: 0%; transition: width 0.3s; text-align: center; line-height: 30px; color: #000; font-weight: bold; }
+    .status { padding: 10px; border-radius: 6px; margin: 10px 0; text-align: center; display: none; }
+    .status.success { background: #00ff8820; color: #00ff88; display: block; }
+    .status.error { background: #ff475720; color: #ff4757; display: block; }
+    .warning { background: #ff9f4320; color: #ff9f43; padding: 10px; border-radius: 6px; margin: 10px 0; font-size: 14px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Firmware Update</h1>
+    <div class="device-id" id="deviceId">Loading...</div>
+    <div class="version">Current Version: <span id="version">--</span></div>
+
+    <div class="card">
+      <h3>Upload New Firmware</h3>
+      <div class="warning">
+        ⚠️ Warning: Device will restart after update. Ensure pump is stopped before proceeding.
+      </div>
+      <input type="file" id="fileInput" accept=".bin">
+      <div class="progress" id="progressBar">
+        <div class="progress-bar" id="progressBarFill">0%</div>
+      </div>
+      <div class="status" id="status"></div>
+      <button class="btn-primary" id="uploadBtn" onclick="uploadFirmware()">Upload Firmware</button>
+      <button class="btn-secondary" onclick="location.href='/config'">Back to Config</button>
+    </div>
+  </div>
+  <script>
+    async function loadInfo() {
+      try {
+        const res = await fetch('/api/device');
+        const dev = await res.json();
+        document.getElementById('deviceId').textContent = dev.device_id;
+        document.getElementById('version').textContent = dev.firmware;
+      } catch(e) { console.error(e); }
+    }
+
+    async function uploadFirmware() {
+      const fileInput = document.getElementById('fileInput');
+      const file = fileInput.files[0];
+
+      if (!file) {
+        alert('Please select a firmware file (.bin)');
+        return;
+      }
+
+      if (!file.name.endsWith('.bin')) {
+        alert('Please select a valid .bin firmware file');
+        return;
+      }
+
+      if (!confirm('Upload firmware and restart device?')) return;
+
+      const uploadBtn = document.getElementById('uploadBtn');
+      const progressBar = document.getElementById('progressBar');
+      const progressBarFill = document.getElementById('progressBarFill');
+      const status = document.getElementById('status');
+
+      uploadBtn.disabled = true;
+      fileInput.disabled = true;
+      progressBar.style.display = 'block';
+      status.style.display = 'none';
+
+      const formData = new FormData();
+      formData.append('firmware', file);
+
+      try {
+        const xhr = new XMLHttpRequest();
+
+        xhr.upload.addEventListener('progress', (e) => {
+          if (e.lengthComputable) {
+            const percent = (e.loaded / e.total) * 100;
+            progressBarFill.style.width = percent + '%';
+            progressBarFill.textContent = Math.round(percent) + '%';
+          }
+        });
+
+        xhr.addEventListener('load', () => {
+          if (xhr.status === 200) {
+            status.className = 'status success';
+            status.textContent = 'Update successful! Device will restart...';
+            status.style.display = 'block';
+            setTimeout(() => { location.href = '/'; }, 10000);
+          } else {
+            status.className = 'status error';
+            status.textContent = 'Update failed: ' + xhr.responseText;
+            status.style.display = 'block';
+            uploadBtn.disabled = false;
+            fileInput.disabled = false;
+          }
+        });
+
+        xhr.addEventListener('error', () => {
+          status.className = 'status error';
+          status.textContent = 'Upload failed. Check connection.';
+          status.style.display = 'block';
+          uploadBtn.disabled = false;
+          fileInput.disabled = false;
+        });
+
+        xhr.open('POST', '/api/update');
+        xhr.send(formData);
+
+      } catch(e) {
+        status.className = 'status error';
+        status.textContent = 'Error: ' + e.message;
+        status.style.display = 'block';
+        uploadBtn.disabled = false;
+        fileInput.disabled = false;
+      }
+    }
+
+    loadInfo();
+  </script>
+</body>
+</html>
+)rawliteral";
+    request->send(200, "text/html", html);
+  });
+
+  // API endpoint for firmware upload
+  server.on("/api/update", HTTP_POST,
+    [](AsyncWebServerRequest *request) {
+      // Request handler - called when upload is complete
+      bool updateSuccess = !Update.hasError();
+
+      AsyncWebServerResponse *response = request->beginResponse(200, "text/plain",
+        updateSuccess ? "Update Success! Rebooting..." : "Update Failed!");
+      response->addHeader("Connection", "close");
+      request->send(response);
+
+      if (updateSuccess) {
+        delay(1000);
+        ESP.restart();
+      }
+    },
+    [](AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final) {
+      // Upload handler - called for each chunk of data
+      if (!index) {
+        Serial.printf("HTTP OTA Update Start: %s\n", filename.c_str());
+
+        // Start update
+        if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
+          Update.printError(Serial);
+          request->send(500, "text/plain", "Update init failed");
+          return;
+        }
+      }
+
+      // Write chunk
+      if (Update.write(data, len) != len) {
+        Update.printError(Serial);
+        request->send(500, "text/plain", "Update write failed");
+        return;
+      }
+
+      // Finish update
+      if (final) {
+        if (Update.end(true)) {
+          Serial.printf("HTTP OTA Update Success: %u bytes\n", index + len);
+        } else {
+          Update.printError(Serial);
+          request->send(500, "text/plain", "Update end failed");
+        }
+      }
+    }
+  );
 
   server.begin();
   Serial.println("Web server started on port 80");
@@ -1387,6 +1581,35 @@ void setup() {
 
     // Connect to cloud MQTT
     connectMQTT();
+
+    // Setup ArduinoOTA for wireless uploads
+    ArduinoOTA.setHostname(DEVICE_ID);
+    ArduinoOTA.setPassword("fieldlink");  // Change this for production!
+
+    ArduinoOTA.onStart([]() {
+      String type = (ArduinoOTA.getCommand() == U_FLASH) ? "sketch" : "filesystem";
+      Serial.println("OTA: Start updating " + type);
+    });
+
+    ArduinoOTA.onEnd([]() {
+      Serial.println("\nOTA: Update complete!");
+    });
+
+    ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
+      Serial.printf("OTA Progress: %u%%\r", (progress / (total / 100)));
+    });
+
+    ArduinoOTA.onError([](ota_error_t error) {
+      Serial.printf("OTA Error[%u]: ", error);
+      if (error == OTA_AUTH_ERROR) Serial.println("Auth Failed");
+      else if (error == OTA_BEGIN_ERROR) Serial.println("Begin Failed");
+      else if (error == OTA_CONNECT_ERROR) Serial.println("Connect Failed");
+      else if (error == OTA_RECEIVE_ERROR) Serial.println("Receive Failed");
+      else if (error == OTA_END_ERROR) Serial.println("End Failed");
+    });
+
+    ArduinoOTA.begin();
+    Serial.printf("ArduinoOTA ready. Hostname: %s\n", DEVICE_ID);
   } else {
     Serial.println("Failed to connect to WiFi. Restarting...");
     delay(3000);
@@ -1402,6 +1625,9 @@ static bool lastDOState = false;
 
 void loop() {
   unsigned long now = millis();
+
+  // Handle OTA updates
+  ArduinoOTA.handle();
 
   handleSerialConfig();
 
