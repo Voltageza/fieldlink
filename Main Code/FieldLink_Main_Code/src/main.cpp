@@ -25,11 +25,12 @@
 #include <nvs_flash.h>
 #include <ESPAsyncWebServer.h>
 #include <Wire.h>
+#include <HTTPClient.h>
 
 /* ================= USER CONFIG ================= */
 
 #define FW_NAME    "ESP32 Pump Controller"
-#define FW_VERSION "1.7.0"
+#define FW_VERSION "1.8.0"
 
 // Captive portal timeout (seconds) - how long to wait for user to configure WiFi
 #define PORTAL_TIMEOUT_S    180
@@ -66,6 +67,9 @@
 #define DEFAULT_MQTT_PORT 8883
 #define DEFAULT_MQTT_USER "fieldlogicuser1"
 #define DEFAULT_MQTT_PASS "@Shadow69"
+
+// Telegram Notification Webhook (Deno Deploy)
+#define NOTIFICATION_WEBHOOK_URL "https://fast-fox-18.voltageza.deno.net/fault"
 
 // Configurable MQTT settings (stored in NVS)
 char mqtt_host[128] = "";
@@ -507,6 +511,7 @@ const char DASHBOARD_HTML[] PROGMEM = R"rawliteral(
 void resetFault();
 void triggerFault(FaultType type);
 const char* faultTypeToString(FaultType ft);
+void sendFaultNotification();
 
 /* ================= DO DRIVER (TCA9554 I2C) ================= */
 
@@ -657,6 +662,39 @@ const char* faultTypeToString(FaultType ft) {
   }
 }
 
+// Send fault notification via HTTP webhook (for Telegram alerts)
+void sendFaultNotification() {
+  if (!wifiConnected) {
+    Serial.println("Cannot send notification - WiFi not connected");
+    return;
+  }
+
+  HTTPClient http;
+  http.begin(NOTIFICATION_WEBHOOK_URL);
+  http.addHeader("Content-Type", "application/json");
+
+  // Build JSON payload with device_id
+  String payload = "{\"device_id\":\"";
+  payload += DEVICE_ID;
+  payload += "\"}";
+
+  Serial.printf("Sending fault notification: %s\n", payload.c_str());
+
+  int httpCode = http.POST(payload);
+
+  if (httpCode > 0) {
+    Serial.printf("Notification sent, response code: %d\n", httpCode);
+    if (httpCode == HTTP_CODE_OK) {
+      String response = http.getString();
+      Serial.printf("Response: %s\n", response.c_str());
+    }
+  } else {
+    Serial.printf("Notification failed, error: %s\n", http.errorToString(httpCode).c_str());
+  }
+
+  http.end();
+}
+
 void triggerFault(FaultType type) {
   if (state != FAULT) {
     state = FAULT;
@@ -671,6 +709,9 @@ void triggerFault(FaultType type) {
 
     Serial.printf("!!! FAULT TRIGGERED: %s !!!\n", faultTypeToString(type));
     Serial.printf("Currents at fault: Ia=%.2f Ib=%.2f Ic=%.2f\n", Ia, Ib, Ic);
+
+    // Send Telegram notification via webhook
+    sendFaultNotification();
   }
 }
 
