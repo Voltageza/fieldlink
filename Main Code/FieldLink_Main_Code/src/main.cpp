@@ -46,8 +46,8 @@
 // Watchdog timeout (seconds)
 #define WDT_TIMEOUT_S       30
 
-// Max payload size for MQTT callback safety
-#define MAX_PAYLOAD_SIZE    128
+// Max payload size for MQTT callback safety (increased for UPDATE_FIRMWARE commands)
+#define MAX_PAYLOAD_SIZE    512
 
 // Timing intervals (non-blocking)
 #define TELEMETRY_INTERVAL_MS  2000
