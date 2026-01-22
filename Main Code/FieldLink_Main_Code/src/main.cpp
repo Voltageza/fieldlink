@@ -28,11 +28,12 @@
 #include <HTTPClient.h>
 #include <ArduinoOTA.h>
 #include <Update.h>
+#include <time.h>
 
 /* ================= USER CONFIG ================= */
 
 #define FW_NAME    "ESP32 Pump Controller"
-#define FW_VERSION "2.0.0"
+#define FW_VERSION "2.4.0"
 #define HW_TYPE    "PUMP_ESP32S3"  // Hardware type for firmware management
 
 // Captive portal timeout (seconds) - how long to wait for user to configure WiFi
@@ -130,6 +131,19 @@ char TOPIC_SUBSCRIBE[64] = "";  // Wildcard for subscriptions
 #define DRY_CURRENT    0.5
 #define START_TIMEOUT  10000
 
+// Protection enable flags
+bool overcurrentProtectionEnabled = true;
+bool dryRunProtectionEnabled = true;
+
+// Schedule settings
+bool scheduleEnabled = false;
+uint8_t scheduleStartHour = 6;
+uint8_t scheduleStartMinute = 0;
+uint8_t scheduleEndHour = 18;
+uint8_t scheduleEndMinute = 0;
+uint8_t scheduleDays = 0x7F;  // Bitmask: bit0=Sun, bit1=Mon...bit6=Sat (0x7F = all days)
+bool wasWithinSchedule = false;  // Track previous state for auto-start detection
+
 /* =============================================== */
 
 // MQTT clients (TLS and non-TLS)
@@ -147,6 +161,9 @@ uint8_t do_state = 0;
 
 // Currents
 float Ia = 0, Ib = 0, Ic = 0;
+
+// Voltages
+float Va = 0, Vb = 0, Vc = 0;
 
 // State machine
 enum PumpState { STOPPED, RUNNING, FAULT };
@@ -353,6 +370,26 @@ const char DASHBOARD_HTML[] PROGMEM = R"rawliteral(
           </div>
         </div>
         <div class="card">
+          <div class="card-title">Phase Voltages</div>
+          <div class="current-grid">
+            <div class="current-card">
+              <div class="current-label">Phase A</div>
+              <div class="current-value" id="voltageA">--</div>
+              <div class="current-unit">Volts</div>
+            </div>
+            <div class="current-card">
+              <div class="current-label">Phase B</div>
+              <div class="current-value" id="voltageB">--</div>
+              <div class="current-unit">Volts</div>
+            </div>
+            <div class="current-card">
+              <div class="current-label">Phase C</div>
+              <div class="current-value" id="voltageC">--</div>
+              <div class="current-unit">Volts</div>
+            </div>
+          </div>
+        </div>
+        <div class="card">
           <div class="card-title">Phase Currents</div>
           <div class="current-grid">
             <div class="current-card">
@@ -416,6 +453,9 @@ const char DASHBOARD_HTML[] PROGMEM = R"rawliteral(
       stateIndicator: document.getElementById('stateIndicator'),
       stateIcon: document.getElementById('stateIcon'),
       stateText: document.getElementById('stateText'),
+      voltageA: document.getElementById('voltageA'),
+      voltageB: document.getElementById('voltageB'),
+      voltageC: document.getElementById('voltageC'),
       currentA: document.getElementById('currentA'),
       currentB: document.getElementById('currentB'),
       currentC: document.getElementById('currentC'),
@@ -444,6 +484,9 @@ const char DASHBOARD_HTML[] PROGMEM = R"rawliteral(
     function updateTelemetry(data) {
       try {
         const t = JSON.parse(data);
+        el.voltageA.textContent = parseFloat(t.Va).toFixed(1);
+        el.voltageB.textContent = parseFloat(t.Vb).toFixed(1);
+        el.voltageC.textContent = parseFloat(t.Vc).toFixed(1);
         el.currentA.textContent = parseFloat(t.Ia).toFixed(1);
         el.currentB.textContent = parseFloat(t.Ib).toFixed(1);
         el.currentC.textContent = parseFloat(t.Ic).toFixed(1);
@@ -566,8 +609,15 @@ bool isValidCurrent(float current) {
   return true;
 }
 
+bool isValidVoltage(float voltage) {
+  if (isnan(voltage) || isinf(voltage)) return false;
+  if (voltage < 0 || voltage > 500) return false;  // 0-500V range
+  return true;
+}
+
 bool readCurrents() {
-  uint8_t result = node.readInputRegisters(0x0006, 6);
+  // Read voltage (0x0000-0x0005) and current (0x0006-0x000B) in one transaction
+  uint8_t result = node.readInputRegisters(0x0000, 12);
 
   if (result != node.ku8MBSuccess) {
     modbusFailCount++;
@@ -586,10 +636,24 @@ bool readCurrents() {
   modbusFailCount = 0;
   sensorOnline = true;
 
-  float newIa = registersToFloat(node.getResponseBuffer(0), node.getResponseBuffer(1));
-  float newIb = registersToFloat(node.getResponseBuffer(2), node.getResponseBuffer(3));
-  float newIc = registersToFloat(node.getResponseBuffer(4), node.getResponseBuffer(5));
+  // Parse voltages (registers 0-5)
+  float newVa = registersToFloat(node.getResponseBuffer(0), node.getResponseBuffer(1));
+  float newVb = registersToFloat(node.getResponseBuffer(2), node.getResponseBuffer(3));
+  float newVc = registersToFloat(node.getResponseBuffer(4), node.getResponseBuffer(5));
 
+  // Parse currents (registers 6-11)
+  float newIa = registersToFloat(node.getResponseBuffer(6), node.getResponseBuffer(7));
+  float newIb = registersToFloat(node.getResponseBuffer(8), node.getResponseBuffer(9));
+  float newIc = registersToFloat(node.getResponseBuffer(10), node.getResponseBuffer(11));
+
+  // Validate voltages
+  if (isValidVoltage(newVa) && isValidVoltage(newVb) && isValidVoltage(newVc)) {
+    Va = newVa;
+    Vb = newVb;
+    Vc = newVc;
+  }
+
+  // Validate currents
   if (!isValidCurrent(newIa) || !isValidCurrent(newIb) || !isValidCurrent(newIc)) {
     Serial.printf("WARNING: Invalid current reading: Ia=%.2f Ib=%.2f Ic=%.2f\n", newIa, newIb, newIc);
     return false;
@@ -603,6 +667,10 @@ bool readCurrents() {
 }
 
 /* ================= MQTT ================= */
+
+// Forward declarations
+void saveProtectionConfig();
+void saveScheduleConfig();
 
 void mqttCallback(char* topic, byte* payload, unsigned int length) {
   if (length >= MAX_PAYLOAD_SIZE) {
@@ -679,6 +747,53 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
         } else {
           Serial.println("UPDATE_FIRMWARE command missing 'url' parameter");
         }
+      }
+      else if (command && strcmp(command, "SET_PROTECTION") == 0) {
+        if (doc.containsKey("overcurrent_enabled"))
+          overcurrentProtectionEnabled = doc["overcurrent_enabled"];
+        if (doc.containsKey("dryrun_enabled"))
+          dryRunProtectionEnabled = doc["dryrun_enabled"];
+        saveProtectionConfig();
+        Serial.println("Protection settings updated via MQTT");
+      }
+      else if (command && strcmp(command, "SET_SCHEDULE") == 0) {
+        if (doc.containsKey("enabled"))
+          scheduleEnabled = doc["enabled"];
+        if (doc.containsKey("start_hour"))
+          scheduleStartHour = doc["start_hour"];
+        if (doc.containsKey("start_minute"))
+          scheduleStartMinute = doc["start_minute"];
+        if (doc.containsKey("end_hour"))
+          scheduleEndHour = doc["end_hour"];
+        if (doc.containsKey("end_minute"))
+          scheduleEndMinute = doc["end_minute"];
+        if (doc.containsKey("days"))
+          scheduleDays = doc["days"];
+        saveScheduleConfig();
+        Serial.println("Schedule updated via MQTT");
+      }
+      else if (command && strcmp(command, "GET_SETTINGS") == 0) {
+        // Respond with current schedule and protection settings
+        StaticJsonDocument<384> resp;
+        resp["type"] = "settings";
+        resp["schedule_enabled"] = scheduleEnabled;
+        resp["schedule_start_hour"] = scheduleStartHour;
+        resp["schedule_start_minute"] = scheduleStartMinute;
+        resp["schedule_end_hour"] = scheduleEndHour;
+        resp["schedule_end_minute"] = scheduleEndMinute;
+        resp["schedule_days"] = scheduleDays;
+        resp["overcurrent_protection"] = overcurrentProtectionEnabled;
+        resp["dryrun_protection"] = dryRunProtectionEnabled;
+        struct tm timeinfo;
+        if (getLocalTime(&timeinfo, 10)) {
+          char timeStr[9];
+          strftime(timeStr, sizeof(timeStr), "%H:%M:%S", &timeinfo);
+          resp["current_time"] = timeStr;
+        }
+        char buf[384];
+        serializeJson(resp, buf);
+        mqtt.publish(TOPIC_TELEMETRY, buf);
+        Serial.println("Settings sent via MQTT");
       }
     }
   }
@@ -871,11 +986,11 @@ float getMaxCurrent() {
 PumpState evaluateState() {
   float maxCurrent = getMaxCurrent();
 
-  if (Ia > MAX_CURRENT || Ib > MAX_CURRENT || Ic > MAX_CURRENT) {
+  if (overcurrentProtectionEnabled && (Ia > MAX_CURRENT || Ib > MAX_CURRENT || Ic > MAX_CURRENT)) {
     return FAULT;
   }
 
-  if (DRY_CURRENT > 0 && startCommand && state == RUNNING) {
+  if (dryRunProtectionEnabled && DRY_CURRENT > 0 && startCommand && state == RUNNING) {
     if (maxCurrent < DRY_CURRENT) {
       return FAULT;
     }
@@ -983,6 +1098,7 @@ void handleSerialConfig() {
     Serial.println("\n--- Pump State ---");
     Serial.printf("State: %s\n", state==RUNNING?"RUNNING":state==FAULT?"FAULT":"STOPPED");
     Serial.printf("Start Command: %s\n", startCommand ? "Yes" : "No");
+    Serial.printf("Voltages: Va=%.1f Vb=%.1f Vc=%.1f V\n", Va, Vb, Vc);
     Serial.printf("Currents: Ia=%.2f Ib=%.2f Ic=%.2f A\n", Ia, Ib, Ic);
     if (state == FAULT) {
       Serial.printf("Fault Type: %s\n", faultTypeToString(faultType));
@@ -1213,6 +1329,73 @@ void resetMqttConfig() {
   Serial.println("MQTT Config reset to defaults");
 }
 
+/* ================= PROTECTION CONFIG ================= */
+
+void loadProtectionConfig() {
+  preferences.begin("protection", true);
+  overcurrentProtectionEnabled = preferences.getBool("overcurrent", true);
+  dryRunProtectionEnabled = preferences.getBool("dryrun", true);
+  preferences.end();
+  Serial.println("Protection config loaded");
+}
+
+void saveProtectionConfig() {
+  preferences.begin("protection", false);
+  preferences.putBool("overcurrent", overcurrentProtectionEnabled);
+  preferences.putBool("dryrun", dryRunProtectionEnabled);
+  preferences.end();
+  Serial.println("Protection config saved");
+}
+
+/* ================= SCHEDULE CONFIG ================= */
+
+void loadScheduleConfig() {
+  preferences.begin("schedule", true);
+  scheduleEnabled = preferences.getBool("enabled", false);
+  scheduleStartHour = preferences.getUChar("startH", 6);
+  scheduleStartMinute = preferences.getUChar("startM", 0);
+  scheduleEndHour = preferences.getUChar("endH", 18);
+  scheduleEndMinute = preferences.getUChar("endM", 0);
+  scheduleDays = preferences.getUChar("days", 0x7F);  // Default: all days
+  preferences.end();
+  Serial.println("Schedule config loaded");
+}
+
+void saveScheduleConfig() {
+  preferences.begin("schedule", false);
+  preferences.putBool("enabled", scheduleEnabled);
+  preferences.putUChar("startH", scheduleStartHour);
+  preferences.putUChar("startM", scheduleStartMinute);
+  preferences.putUChar("endH", scheduleEndHour);
+  preferences.putUChar("endM", scheduleEndMinute);
+  preferences.putUChar("days", scheduleDays);
+  preferences.end();
+  Serial.println("Schedule config saved");
+}
+
+bool isWithinSchedule() {
+  if (!scheduleEnabled) return true;  // No schedule = always allowed
+
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo, 10)) return true;  // NTP failed = allow (10ms timeout)
+
+  // Check if today is an allowed day (tm_wday: 0=Sun, 1=Mon...6=Sat)
+  if (!(scheduleDays & (1 << timeinfo.tm_wday))) {
+    return false;  // Today is not a scheduled day
+  }
+
+  int nowMins = timeinfo.tm_hour * 60 + timeinfo.tm_min;
+  int startMins = scheduleStartHour * 60 + scheduleStartMinute;
+  int endMins = scheduleEndHour * 60 + scheduleEndMinute;
+
+  if (startMins <= endMins) {
+    return nowMins >= startMins && nowMins < endMins;
+  } else {
+    // Overnight schedule (e.g., 22:00 - 06:00)
+    return nowMins >= startMins || nowMins < endMins;
+  }
+}
+
 /* ================= WEB SERVER ================= */
 
 void setupWebServer() {
@@ -1223,7 +1406,10 @@ void setupWebServer() {
 
   // API endpoint for status
   server.on("/api/status", HTTP_GET, [](AsyncWebServerRequest *request){
-    StaticJsonDocument<256> doc;
+    StaticJsonDocument<384> doc;
+    doc["Va"] = Va;
+    doc["Vb"] = Vb;
+    doc["Vc"] = Vc;
     doc["Ia"] = Ia;
     doc["Ib"] = Ib;
     doc["Ic"] = Ic;
@@ -1336,6 +1522,72 @@ void setupWebServer() {
     request->send(200, "text/plain", "Config reset. Rebooting...");
     delay(1000);
     ESP.restart();
+  });
+
+  // Protection settings API
+  server.on("/api/protection", HTTP_GET, [](AsyncWebServerRequest *request){
+    StaticJsonDocument<128> doc;
+    doc["overcurrent_enabled"] = overcurrentProtectionEnabled;
+    doc["dryrun_enabled"] = dryRunProtectionEnabled;
+    String response;
+    serializeJson(doc, response);
+    request->send(200, "application/json", response);
+  });
+
+  server.on("/api/protection", HTTP_POST, [](AsyncWebServerRequest *request){
+    if (request->hasParam("overcurrent_enabled", true))
+      overcurrentProtectionEnabled = request->getParam("overcurrent_enabled", true)->value() == "true";
+    if (request->hasParam("dryrun_enabled", true))
+      dryRunProtectionEnabled = request->getParam("dryrun_enabled", true)->value() == "true";
+    saveProtectionConfig();
+    request->send(200, "text/plain", "Protection settings saved");
+  });
+
+  // Schedule settings API
+  server.on("/api/schedule", HTTP_GET, [](AsyncWebServerRequest *request){
+    StaticJsonDocument<384> doc;
+    doc["enabled"] = scheduleEnabled;
+    doc["start_hour"] = scheduleStartHour;
+    doc["start_minute"] = scheduleStartMinute;
+    doc["end_hour"] = scheduleEndHour;
+    doc["end_minute"] = scheduleEndMinute;
+    doc["days"] = scheduleDays;  // Bitmask: bit0=Sun...bit6=Sat
+    // Individual day flags for convenience
+    JsonObject daysObj = doc.createNestedObject("days_detail");
+    daysObj["sun"] = (scheduleDays & 0x01) != 0;
+    daysObj["mon"] = (scheduleDays & 0x02) != 0;
+    daysObj["tue"] = (scheduleDays & 0x04) != 0;
+    daysObj["wed"] = (scheduleDays & 0x08) != 0;
+    daysObj["thu"] = (scheduleDays & 0x10) != 0;
+    daysObj["fri"] = (scheduleDays & 0x20) != 0;
+    daysObj["sat"] = (scheduleDays & 0x40) != 0;
+    struct tm timeinfo;
+    if (getLocalTime(&timeinfo, 10)) {
+      char timeStr[9];
+      strftime(timeStr, sizeof(timeStr), "%H:%M:%S", &timeinfo);
+      doc["current_time"] = timeStr;
+      doc["current_day"] = timeinfo.tm_wday;  // 0=Sun, 1=Mon...6=Sat
+    }
+    String response;
+    serializeJson(doc, response);
+    request->send(200, "application/json", response);
+  });
+
+  server.on("/api/schedule", HTTP_POST, [](AsyncWebServerRequest *request){
+    if (request->hasParam("enabled", true))
+      scheduleEnabled = request->getParam("enabled", true)->value() == "true";
+    if (request->hasParam("start_hour", true))
+      scheduleStartHour = request->getParam("start_hour", true)->value().toInt();
+    if (request->hasParam("start_minute", true))
+      scheduleStartMinute = request->getParam("start_minute", true)->value().toInt();
+    if (request->hasParam("end_hour", true))
+      scheduleEndHour = request->getParam("end_hour", true)->value().toInt();
+    if (request->hasParam("end_minute", true))
+      scheduleEndMinute = request->getParam("end_minute", true)->value().toInt();
+    if (request->hasParam("days", true))
+      scheduleDays = request->getParam("days", true)->value().toInt();
+    saveScheduleConfig();
+    request->send(200, "text/plain", "Schedule saved");
   });
 
   // MQTT configuration page
@@ -1706,8 +1958,26 @@ void setup() {
     wifiConnected = true;
     configLoaded = true;
 
+    // Configure NTP for time sync (GMT+2 for South Africa)
+    configTime(2 * 3600, 0, "pool.ntp.org", "time.nist.gov");
+    Serial.println("NTP configured");
+
     // Load MQTT config from NVS
     loadMqttConfig();
+
+    // Load protection config from NVS
+    loadProtectionConfig();
+
+    // Load schedule config from NVS
+    loadScheduleConfig();
+
+    // Initialize schedule state and auto-start if booting within schedule window
+    wasWithinSchedule = isWithinSchedule();
+    Serial.printf("Schedule init: currently %s schedule window\n", wasWithinSchedule ? "within" : "outside");
+    if (scheduleEnabled && wasWithinSchedule) {
+      startCommand = true;
+      Serial.println("Schedule: Boot within allowed hours, starting pump");
+    }
 
     // Start web server
     setupWebServer();
@@ -1840,7 +2110,23 @@ void loop() {
     readCurrents();
     updateState();
 
-    bool desiredDO = (startCommand && state != FAULT);
+    // Check schedule - auto-start when entering window, auto-stop when leaving
+    bool scheduleAllows = isWithinSchedule();
+    if (scheduleEnabled) {
+      // Detect transition INTO schedule window → auto-start
+      if (scheduleAllows && !wasWithinSchedule && state != FAULT) {
+        startCommand = true;
+        Serial.println("Schedule: Entering allowed hours, starting pump");
+      }
+      // Detect transition OUT OF schedule window → auto-stop
+      if (!scheduleAllows && wasWithinSchedule && startCommand) {
+        startCommand = false;
+        Serial.println("Schedule: Outside allowed hours, stopping pump");
+      }
+      wasWithinSchedule = scheduleAllows;
+    }
+
+    bool desiredDO = (startCommand && state != FAULT && scheduleAllows);
     if (desiredDO != lastDOState) {
       setDO(DO_CONTACTOR_CH, desiredDO);
       Serial.printf("Contactor: %s\n", desiredDO ? "ON" : "OFF");
@@ -1852,8 +2138,11 @@ void loop() {
     lastTelemetryTime = now;
 
     if (mqttConnected && mqtt.connected()) {
-      StaticJsonDocument<384> doc;
+      StaticJsonDocument<512> doc;
 
+      doc["Va"] = round(Va * 10) / 10.0;
+      doc["Vb"] = round(Vb * 10) / 10.0;
+      doc["Vc"] = round(Vc * 10) / 10.0;
       doc["Ia"] = round(Ia * 100) / 100.0;
       doc["Ib"] = round(Ib * 100) / 100.0;
       doc["Ic"] = round(Ic * 100) / 100.0;
@@ -1872,7 +2161,15 @@ void loop() {
       doc["hardware_type"] = HW_TYPE;
       doc["firmware_version"] = FW_VERSION;
 
-      char buf[384];
+      // Add device time from NTP
+      struct tm timeinfo;
+      if (getLocalTime(&timeinfo, 10)) {
+        char timeStr[9];
+        strftime(timeStr, sizeof(timeStr), "%H:%M:%S", &timeinfo);
+        doc["time"] = timeStr;
+      }
+
+      char buf[512];
       serializeJson(doc, buf);
       mqtt.publish(TOPIC_TELEMETRY, buf);
     }

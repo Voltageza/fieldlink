@@ -56,7 +56,7 @@
 #define MIN_VALID_CURRENT      -0.5
 #define MAX_VALID_CURRENT      500.0
 
-// Fault handling
+// Fault handlingc:\Users\jacok\OneDrive\Documents\Electrical Pro\IoT Projects\Hearing Aid\esp32_notification_relay.ino
 #define MAX_MODBUS_FAILURES    5
 #define FAULT_AUTO_RESET_MS    0
 
