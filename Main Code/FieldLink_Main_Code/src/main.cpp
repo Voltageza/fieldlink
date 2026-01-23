@@ -33,7 +33,7 @@
 /* ================= USER CONFIG ================= */
 
 #define FW_NAME    "ESP32 Pump Controller"
-#define FW_VERSION "2.4.0"
+#define FW_VERSION "2.5.0"
 #define HW_TYPE    "PUMP_ESP32S3"  // Hardware type for firmware management
 
 // Captive portal timeout (seconds) - how long to wait for user to configure WiFi
@@ -67,13 +67,8 @@
 #define FAULT_AUTO_RESET_MS    0
 
 // Default MQTT Broker (HiveMQ Cloud)
-#define DEFAULT_MQTT_HOST "a5c598acdbdc4abba053799bcefb73d0.s1.eu.hivemq.cloud"
-#define DEFAULT_MQTT_PORT 8883
-#define DEFAULT_MQTT_USER "fieldlogicuser1"
-#define DEFAULT_MQTT_PASS "@Shadow69"
-
-// Telegram Notification Webhook (Deno Deploy)
-#define NOTIFICATION_WEBHOOK_URL "https://fast-fox-18.voltageza.deno.net/fault"
+// Load credentials from secrets.h (not committed to git)
+#include "secrets.h"
 
 // Configurable MQTT settings (stored in NVS)
 char mqtt_host[128] = "";
@@ -440,9 +435,9 @@ const char DASHBOARD_HTML[] PROGMEM = R"rawliteral(
     </div>
   </div>
   <script>
-    const MQTT_BROKER = 'wss://a5c598acdbdc4abba053799bcefb73d0.s1.eu.hivemq.cloud:8884/mqtt';
-    const MQTT_USER = 'fieldlogicuser1';
-    const MQTT_PASS = '@Shadow69';
+    const MQTT_BROKER = 'wss://)" DEFAULT_MQTT_HOST R"(:8884/mqtt';
+    const MQTT_USER = ')" DEFAULT_MQTT_USER R"(';
+    const MQTT_PASS = ')" DEFAULT_MQTT_PASS R"(';
     let TOPIC_TELEMETRY = '';
     let TOPIC_COMMAND = '';
     let DEVICE_ID = '';
@@ -1398,14 +1393,25 @@ bool isWithinSchedule() {
 
 /* ================= WEB SERVER ================= */
 
+// Authentication check helper
+bool checkAuth(AsyncWebServerRequest *request) {
+  if (!request->authenticate(WEB_AUTH_USER, WEB_AUTH_PASS)) {
+    request->requestAuthentication();
+    return false;
+  }
+  return true;
+}
+
 void setupWebServer() {
-  // Serve dashboard
+  // Serve dashboard (requires auth)
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
+    if (!checkAuth(request)) return;
     request->send_P(200, "text/html", DASHBOARD_HTML);
   });
 
   // API endpoint for status
   server.on("/api/status", HTTP_GET, [](AsyncWebServerRequest *request){
+    if (!checkAuth(request)) return;
     StaticJsonDocument<384> doc;
     doc["Va"] = Va;
     doc["Vb"] = Vb;
@@ -1427,6 +1433,7 @@ void setupWebServer() {
 
   // API endpoint for commands
   server.on("/api/command", HTTP_POST, [](AsyncWebServerRequest *request){
+    if (!checkAuth(request)) return;
     if (request->hasParam("cmd", true)) {
       String cmd = request->getParam("cmd", true)->value();
       if (cmd == "START" && state != FAULT) {
@@ -1450,6 +1457,7 @@ void setupWebServer() {
 
   // API endpoint for device info
   server.on("/api/device", HTTP_GET, [](AsyncWebServerRequest *request){
+    if (!checkAuth(request)) return;
     StaticJsonDocument<512> doc;
     doc["device_id"] = DEVICE_ID;
     doc["hardware_type"] = HW_TYPE;
@@ -1469,6 +1477,7 @@ void setupWebServer() {
 
   // API endpoint for MQTT config (GET)
   server.on("/api/mqtt", HTTP_GET, [](AsyncWebServerRequest *request){
+    if (!checkAuth(request)) return;
     StaticJsonDocument<256> doc;
     doc["host"] = mqtt_host;
     doc["port"] = mqtt_port;
@@ -1483,6 +1492,7 @@ void setupWebServer() {
 
   // API endpoint for MQTT config (POST)
   server.on("/api/mqtt", HTTP_POST, [](AsyncWebServerRequest *request){
+    if (!checkAuth(request)) return;
     bool changed = false;
 
     if (request->hasParam("host", true)) {
@@ -1518,6 +1528,7 @@ void setupWebServer() {
 
   // API endpoint to reset MQTT config
   server.on("/api/mqtt/reset", HTTP_POST, [](AsyncWebServerRequest *request){
+    if (!checkAuth(request)) return;
     resetMqttConfig();
     request->send(200, "text/plain", "Config reset. Rebooting...");
     delay(1000);
@@ -1526,6 +1537,7 @@ void setupWebServer() {
 
   // Protection settings API
   server.on("/api/protection", HTTP_GET, [](AsyncWebServerRequest *request){
+    if (!checkAuth(request)) return;
     StaticJsonDocument<128> doc;
     doc["overcurrent_enabled"] = overcurrentProtectionEnabled;
     doc["dryrun_enabled"] = dryRunProtectionEnabled;
@@ -1535,6 +1547,7 @@ void setupWebServer() {
   });
 
   server.on("/api/protection", HTTP_POST, [](AsyncWebServerRequest *request){
+    if (!checkAuth(request)) return;
     if (request->hasParam("overcurrent_enabled", true))
       overcurrentProtectionEnabled = request->getParam("overcurrent_enabled", true)->value() == "true";
     if (request->hasParam("dryrun_enabled", true))
@@ -1545,6 +1558,7 @@ void setupWebServer() {
 
   // Schedule settings API
   server.on("/api/schedule", HTTP_GET, [](AsyncWebServerRequest *request){
+    if (!checkAuth(request)) return;
     StaticJsonDocument<384> doc;
     doc["enabled"] = scheduleEnabled;
     doc["start_hour"] = scheduleStartHour;
@@ -1574,6 +1588,7 @@ void setupWebServer() {
   });
 
   server.on("/api/schedule", HTTP_POST, [](AsyncWebServerRequest *request){
+    if (!checkAuth(request)) return;
     if (request->hasParam("enabled", true))
       scheduleEnabled = request->getParam("enabled", true)->value() == "true";
     if (request->hasParam("start_hour", true))
@@ -1592,6 +1607,7 @@ void setupWebServer() {
 
   // MQTT configuration page
   server.on("/config", HTTP_GET, [](AsyncWebServerRequest *request){
+    if (!checkAuth(request)) return;
     String html = R"rawliteral(
 <!DOCTYPE html>
 <html>
@@ -1835,9 +1851,10 @@ void setupWebServer() {
     request->send(200, "text/html", html);
   });
 
-  // API endpoint for firmware upload
+  // API endpoint for firmware upload (requires authentication)
   server.on("/api/update", HTTP_POST,
     [](AsyncWebServerRequest *request) {
+      if (!checkAuth(request)) return;
       // Request handler - called when upload is complete
       bool updateSuccess = !Update.hasError();
 
@@ -1987,7 +2004,7 @@ void setup() {
 
     // Setup ArduinoOTA for wireless uploads
     ArduinoOTA.setHostname(DEVICE_ID);
-    ArduinoOTA.setPassword("fieldlink");  // Change this for production!
+    ArduinoOTA.setPassword(OTA_PASSWORD);
 
     ArduinoOTA.onStart([]() {
       String type = (ArduinoOTA.getCommand() == U_FLASH) ? "sketch" : "filesystem";

@@ -28,6 +28,7 @@ desktop.ini
 
 # Separate git repos
 fieldlink-dashboard/
+fieldlogic-portal/
 
 # Test/scratch projects
 esp32_wifi_mqtt_test/
