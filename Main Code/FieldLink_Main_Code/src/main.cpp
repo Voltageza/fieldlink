@@ -573,14 +573,29 @@ void writeDO() {
 }
 
 void initDO() {
-  // Configure TCA9554: set all pins as outputs
+  // CRITICAL: Set output values BEFORE configuring as outputs
+  // This prevents glitches when pins transition from input to output
+
+  // Step 1: Write output port register first (0xFF = all OFF for active-low)
+  do_state = 0xFF;
+  Wire.beginTransmission(TCA9554_ADDR);
+  Wire.write(0x01);  // Output port register
+  Wire.write(do_state);
+  Wire.endTransmission();
+
+  // Step 2: Set polarity inversion to none
+  Wire.beginTransmission(TCA9554_ADDR);
+  Wire.write(0x02);  // Polarity inversion register
+  Wire.write(0x00);  // No inversion
+  Wire.endTransmission();
+
+  // Step 3: NOW configure all pins as outputs
   Wire.beginTransmission(TCA9554_ADDR);
   Wire.write(0x03);  // Configuration register
   Wire.write(0x00);  // All pins as outputs (0 = output)
   Wire.endTransmission();
 
-  // Initialize all outputs to OFF (active-low: 0xFF = all OFF)
-  do_state = 0xFF;
+  // Step 4: Write output state again to ensure it's correct
   writeDO();
   Serial.println("TCA9554 I/O expander initialized");
 }
@@ -980,8 +995,8 @@ void triggerFault(FaultType type) {
     Serial.printf("!!! FAULT TRIGGERED: %s !!!\n", faultTypeToString(type));
     Serial.printf("Currents at fault: Ia=%.2f Ib=%.2f Ic=%.2f\n", Ia, Ib, Ic);
 
-    // Send Telegram notification via webhook
-    sendFaultNotification();
+    // TEMPORARILY DISABLED - testing if this causes DO3 issue
+    // sendFaultNotification();
   }
 }
 
@@ -2020,6 +2035,22 @@ void setupWebServer() {
 /* ================= SETUP ================= */
 
 void setup() {
+  // CRITICAL: I2C bus recovery - release stuck bus from previous crash
+  pinMode(I2C_SCL, OUTPUT);
+  pinMode(I2C_SDA, INPUT_PULLUP);
+  for (int i = 0; i < 9; i++) {
+    digitalWrite(I2C_SCL, LOW);
+    delayMicroseconds(5);
+    digitalWrite(I2C_SCL, HIGH);
+    delayMicroseconds(5);
+  }
+  pinMode(I2C_SCL, INPUT_PULLUP);
+  delayMicroseconds(100);
+
+  // CRITICAL: Initialize I2C and outputs FIRST to prevent floating pins
+  Wire.begin(I2C_SDA, I2C_SCL);
+  initDO();
+
   Serial.begin(115200);
   delay(3000);  // Wait for USB CDC to enumerate
 
@@ -2041,10 +2072,6 @@ void setup() {
   }
 
   Serial.println("Type 'HELP' for serial commands");
-
-  // Initialize I2C for TCA9554 I/O expander
-  Wire.begin(I2C_SDA, I2C_SCL);
-  initDO();
 
   // Initialize digital inputs (with internal pull-up)
   pinMode(DI1_PIN, INPUT_PULLUP);  // START button (NO)
@@ -2238,8 +2265,13 @@ void loop() {
   }
 
   // ===== UPDATE INDICATOR OUTPUTS =====
-  setDO(DO_RUN_LED_CH, state == RUNNING);
-  setDO(DO_FAULT_LED_CH, state == FAULT);
+  // TEMPORARILY DISABLED - testing DO3 issue
+  // setDO(DO_RUN_LED_CH, state == RUNNING);
+  // setDO(DO_FAULT_LED_CH, state == FAULT);
+
+  // Force ALL outputs except contactor to OFF
+  do_state |= 0xFE;  // Ensure bits 1-7 are always 1 (OFF), preserve bit 0 (contactor)
+  writeDO();         // Always sync to hardware
 
   if (now - lastSensorReadTime >= SENSOR_READ_INTERVAL_MS) {
     lastSensorReadTime = now;
