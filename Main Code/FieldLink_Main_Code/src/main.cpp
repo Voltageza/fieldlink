@@ -33,7 +33,7 @@
 /* ================= USER CONFIG ================= */
 
 #define FW_NAME    "ESP32 Pump Controller"
-#define FW_VERSION "2.5.0"
+#define FW_VERSION "2.6.1"
 #define HW_TYPE    "PUMP_ESP32S3"  // Hardware type for firmware management
 
 // Captive portal timeout (seconds) - how long to wait for user to configure WiFi
@@ -138,6 +138,11 @@ uint8_t scheduleEndHour = 18;
 uint8_t scheduleEndMinute = 0;
 uint8_t scheduleDays = 0x7F;  // Bitmask: bit0=Sun, bit1=Mon...bit6=Sat (0x7F = all days)
 bool wasWithinSchedule = false;  // Track previous state for auto-start detection
+
+// Ruraflex TOU settings (Eskom South Africa)
+// When enabled, pump runs ONLY during off-peak hours
+// Season auto-detected: June-Aug = High Demand, Sept-May = Low Demand
+bool ruraflexEnabled = false;
 
 /* =============================================== */
 
@@ -666,6 +671,7 @@ bool readCurrents() {
 // Forward declarations
 void saveProtectionConfig();
 void saveScheduleConfig();
+void saveRuraflexConfig();
 
 void mqttCallback(char* topic, byte* payload, unsigned int length) {
   if (length >= MAX_PAYLOAD_SIZE) {
@@ -767,9 +773,20 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
         saveScheduleConfig();
         Serial.println("Schedule updated via MQTT");
       }
+      else if (command && strcmp(command, "SET_RURAFLEX") == 0) {
+        if (doc.containsKey("enabled"))
+          ruraflexEnabled = doc["enabled"];
+        // Disable custom schedule when Ruraflex is enabled
+        if (ruraflexEnabled && scheduleEnabled) {
+          scheduleEnabled = false;
+          saveScheduleConfig();
+        }
+        saveRuraflexConfig();
+        Serial.println("Ruraflex updated via MQTT");
+      }
       else if (command && strcmp(command, "GET_SETTINGS") == 0) {
-        // Respond with current schedule and protection settings
-        StaticJsonDocument<384> resp;
+        // Respond with current schedule, ruraflex and protection settings
+        StaticJsonDocument<512> resp;
         resp["type"] = "settings";
         resp["schedule_enabled"] = scheduleEnabled;
         resp["schedule_start_hour"] = scheduleStartHour;
@@ -777,6 +794,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
         resp["schedule_end_hour"] = scheduleEndHour;
         resp["schedule_end_minute"] = scheduleEndMinute;
         resp["schedule_days"] = scheduleDays;
+        resp["ruraflex_enabled"] = ruraflexEnabled;
         resp["overcurrent_protection"] = overcurrentProtectionEnabled;
         resp["dryrun_protection"] = dryRunProtectionEnabled;
         struct tm timeinfo;
@@ -785,7 +803,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
           strftime(timeStr, sizeof(timeStr), "%H:%M:%S", &timeinfo);
           resp["current_time"] = timeStr;
         }
-        char buf[384];
+        char buf[512];
         serializeJson(resp, buf);
         mqtt.publish(TOPIC_TELEMETRY, buf);
         Serial.println("Settings sent via MQTT");
@@ -1368,7 +1386,92 @@ void saveScheduleConfig() {
   Serial.println("Schedule config saved");
 }
 
+/* ================= RURAFLEX CONFIG ================= */
+
+void loadRuraflexConfig() {
+  preferences.begin("ruraflex", true);
+  ruraflexEnabled = preferences.getBool("enabled", false);
+  preferences.end();
+  Serial.println("Ruraflex config loaded");
+}
+
+void saveRuraflexConfig() {
+  preferences.begin("ruraflex", false);
+  preferences.putBool("enabled", ruraflexEnabled);
+  preferences.end();
+  Serial.println("Ruraflex config saved");
+}
+
+// Ruraflex TOU time checking (Eskom South Africa 2025/26)
+// Returns true if pump is allowed to run based on current TOU period
+bool isWithinRuraflex() {
+  if (!ruraflexEnabled) return true;  // Not enabled = always allowed
+
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo, 10)) return true;  // NTP failed = allow
+
+  int month = timeinfo.tm_mon + 1;  // tm_mon is 0-11
+  int dayOfWeek = timeinfo.tm_wday; // 0=Sun, 1=Mon...6=Sat
+  int hour = timeinfo.tm_hour;
+  int mins = timeinfo.tm_min;
+  int nowMins = hour * 60 + mins;
+
+  // Determine season: High Demand = June-August, Low Demand = Sept-May
+  bool isHighDemandSeason = (month >= 6 && month <= 8);
+
+  // Determine day type: 0=Sunday, 1-5=Weekday, 6=Saturday
+  bool isWeekday = (dayOfWeek >= 1 && dayOfWeek <= 5);
+  bool isSaturday = (dayOfWeek == 6);
+  bool isSunday = (dayOfWeek == 0);
+
+  // Define time periods (in minutes from midnight)
+  // High Demand Season (Winter: June-August)
+  // Peak: 06:00-08:00 (360-480), 17:00-20:00 (1020-1200) - Weekdays only
+  // Standard: 08:00-17:00 (480-1020), 20:00-22:00 (1200-1320) weekdays
+  //           07:00-12:00 (420-720), 18:00-20:00 (1080-1200) weekends
+  // Off-peak: 22:00-06:00 (1320-360) weekdays, rest of weekends
+
+  // Low Demand Season (Summer: Sept-May)
+  // Peak: 07:00-09:00 (420-540), 17:00-20:00 (1020-1200) - Weekdays only
+  // Standard: 06:00-07:00 (360-420), 09:00-17:00 (540-1020), 20:00-22:00 (1200-1320) weekdays
+  //           07:00-12:00 (420-720), 18:00-20:00 (1080-1200) weekends
+  // Off-peak: 22:00-06:00 (1320-360) weekdays, rest of weekends
+
+  bool isPeak = false;
+  bool isStandard = false;
+
+  if (isWeekday) {
+    if (isHighDemandSeason) {
+      // High demand weekday peaks: 06:00-08:00 and 17:00-20:00
+      isPeak = (nowMins >= 360 && nowMins < 480) || (nowMins >= 1020 && nowMins < 1200);
+      // Standard: 08:00-17:00 and 20:00-22:00
+      isStandard = (nowMins >= 480 && nowMins < 1020) || (nowMins >= 1200 && nowMins < 1320);
+    } else {
+      // Low demand weekday peaks: 07:00-09:00 and 17:00-20:00
+      isPeak = (nowMins >= 420 && nowMins < 540) || (nowMins >= 1020 && nowMins < 1200);
+      // Standard: 06:00-07:00, 09:00-17:00, and 20:00-22:00
+      isStandard = (nowMins >= 360 && nowMins < 420) || (nowMins >= 540 && nowMins < 1020) || (nowMins >= 1200 && nowMins < 1320);
+    }
+  } else {
+    // Weekend (Saturday and Sunday) - no peak periods
+    isPeak = false;
+    // Standard: 07:00-12:00 and 18:00-20:00
+    isStandard = (nowMins >= 420 && nowMins < 720) || (nowMins >= 1080 && nowMins < 1200);
+  }
+
+  // Off-peak is everything else (not peak and not standard)
+  bool isOffPeak = !isPeak && !isStandard;
+
+  // Pump runs ONLY during off-peak hours
+  return isOffPeak;
+}
+
 bool isWithinSchedule() {
+  // Ruraflex takes priority over custom schedule
+  if (ruraflexEnabled) {
+    return isWithinRuraflex();
+  }
+
   if (!scheduleEnabled) return true;  // No schedule = always allowed
 
   struct tm timeinfo;
@@ -1988,10 +2091,13 @@ void setup() {
     // Load schedule config from NVS
     loadScheduleConfig();
 
+    // Load Ruraflex config from NVS
+    loadRuraflexConfig();
+
     // Initialize schedule state and auto-start if booting within schedule window
     wasWithinSchedule = isWithinSchedule();
     Serial.printf("Schedule init: currently %s schedule window\n", wasWithinSchedule ? "within" : "outside");
-    if (scheduleEnabled && wasWithinSchedule) {
+    if ((scheduleEnabled || ruraflexEnabled) && wasWithinSchedule) {
       startCommand = true;
       Serial.println("Schedule: Boot within allowed hours, starting pump");
     }
@@ -2127,9 +2233,9 @@ void loop() {
     readCurrents();
     updateState();
 
-    // Check schedule - auto-start when entering window, auto-stop when leaving
+    // Check schedule/Ruraflex - auto-start when entering window, auto-stop when leaving
     bool scheduleAllows = isWithinSchedule();
-    if (scheduleEnabled) {
+    if (scheduleEnabled || ruraflexEnabled) {
       // Detect transition INTO schedule window → auto-start
       if (scheduleAllows && !wasWithinSchedule && state != FAULT) {
         startCommand = true;
