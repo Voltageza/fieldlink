@@ -33,7 +33,10 @@
 /* ================= USER CONFIG ================= */
 
 #define FW_NAME    "ESP32 Pump Controller"
-#define FW_VERSION "2.6.1"
+#define FW_VERSION "2.6.2-debug"
+
+// BENCH TEST MODE - disable protections that require pump/load
+#define BENCH_TEST_MODE true  // Set to false for production
 #define HW_TYPE    "PUMP_ESP32S3"  // Hardware type for firmware management
 
 // Captive portal timeout (seconds) - how long to wait for user to configure WiFi
@@ -156,8 +159,8 @@ HardwareSerial RS485(2);
 // Web server on port 80
 AsyncWebServer server(80);
 
-// DO register
-uint8_t do_state = 0;
+// DO register (0xFF = all OFF for active-low outputs)
+uint8_t do_state = 0xFF;
 
 // Currents
 float Ia = 0, Ib = 0, Ic = 0;
@@ -566,7 +569,10 @@ void writeDO() {
   Wire.beginTransmission(TCA9554_ADDR);
   Wire.write(0x01);  // Output port register
   Wire.write(do_state);
-  Wire.endTransmission();
+  uint8_t result = Wire.endTransmission();
+  if (result != 0) {
+    Serial.printf("DEBUG: I2C write ERROR, result=%d\n", result);
+  }
 }
 
 void initDO() {
@@ -583,10 +589,16 @@ void initDO() {
 }
 
 void setDO(uint8_t ch, bool on) {
+  uint8_t old_state = do_state;
   // Active-low outputs: clear bit to turn ON, set bit to turn OFF
   if (on) do_state &= ~(1 << ch);
   else    do_state |=  (1 << ch);
-  writeDO();
+
+  // Only write and log if state actually changed
+  if (do_state != old_state) {
+    Serial.printf("DEBUG: setDO(ch=%d, on=%d) do_state: 0x%02X -> 0x%02X\n", ch, on, old_state, do_state);
+    writeDO();
+  }
 }
 
 /* ================= RS485 ================= */
@@ -691,14 +703,17 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   Serial.print("MQTT CMD: "); Serial.println(cmd);
 
   if (strcmp(cmd, "START") == 0) {
+    Serial.println("DEBUG: START command received");
     if (!remoteMode) {
       Serial.println("MQTT START ignored - in LOCAL mode");
     } else if (state == FAULT) {
       Serial.println("Cannot START while in FAULT state. Send RESET first.");
     } else {
+      Serial.println("DEBUG: Setting startCommand=true...");
       startCommand = true;
       startCommandTime = millis();
       Serial.println("Start command accepted (REMOTE mode)");
+      Serial.println("DEBUG: START command processing complete");
     }
   }
   else if (strcmp(cmd, "STOP") == 0) {
@@ -1003,6 +1018,7 @@ PumpState evaluateState() {
     return FAULT;
   }
 
+  #if !BENCH_TEST_MODE
   if (dryRunProtectionEnabled && DRY_CURRENT > 0 && startCommand && state == RUNNING) {
     if (maxCurrent < DRY_CURRENT) {
       return FAULT;
@@ -1015,6 +1031,7 @@ PumpState evaluateState() {
       return FAULT;
     }
   }
+  #endif
 
   if (state == RUNNING) {
     if (maxCurrent < (RUN_THRESHOLD - HYSTERESIS_CURRENT)) {
@@ -2016,6 +2033,9 @@ void setup() {
   Serial.println("\n\n*** ESP32 BOOT ***");
   Serial.println(FW_NAME);
   Serial.printf("Version: %s\n", FW_VERSION);
+  #if BENCH_TEST_MODE
+  Serial.println("*** BENCH TEST MODE - DRY_RUN and START_TIMEOUT disabled ***");
+  #endif
   Serial.flush();
 
   // Initialize NVS
@@ -2251,9 +2271,16 @@ void loop() {
 
     bool desiredDO = (startCommand && state != FAULT && scheduleAllows);
     if (desiredDO != lastDOState) {
+      Serial.printf("DEBUG: Contactor state change needed: %s -> %s\n",
+                    lastDOState ? "ON" : "OFF", desiredDO ? "ON" : "OFF");
+      Serial.printf("DEBUG: startCommand=%d, state=%d, scheduleAllows=%d\n",
+                    startCommand, state, scheduleAllows);
+      Serial.println("DEBUG: About to call setDO for contactor...");
       setDO(DO_CONTACTOR_CH, desiredDO);
+      Serial.println("DEBUG: setDO for contactor returned");
       Serial.printf("Contactor: %s\n", desiredDO ? "ON" : "OFF");
       lastDOState = desiredDO;
+      Serial.println("DEBUG: Contactor state change complete");
     }
   }
 
