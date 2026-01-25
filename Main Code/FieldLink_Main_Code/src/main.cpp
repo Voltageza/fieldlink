@@ -33,10 +33,10 @@
 /* ================= USER CONFIG ================= */
 
 #define FW_NAME    "ESP32 Pump Controller"
-#define FW_VERSION "2.6.2-debug"
+#define FW_VERSION "2.6.2"
 
 // BENCH TEST MODE - disable protections that require pump/load
-#define BENCH_TEST_MODE true  // Set to false for production
+#define BENCH_TEST_MODE false  // Set to true for bench testing without pump
 #define HW_TYPE    "PUMP_ESP32S3"  // Hardware type for firmware management
 
 // Captive portal timeout (seconds) - how long to wait for user to configure WiFi
@@ -569,10 +569,7 @@ void writeDO() {
   Wire.beginTransmission(TCA9554_ADDR);
   Wire.write(0x01);  // Output port register
   Wire.write(do_state);
-  uint8_t result = Wire.endTransmission();
-  if (result != 0) {
-    Serial.printf("DEBUG: I2C write ERROR, result=%d\n", result);
-  }
+  Wire.endTransmission();
 }
 
 void initDO() {
@@ -594,9 +591,8 @@ void setDO(uint8_t ch, bool on) {
   if (on) do_state &= ~(1 << ch);
   else    do_state |=  (1 << ch);
 
-  // Only write and log if state actually changed
+  // Only write if state actually changed
   if (do_state != old_state) {
-    Serial.printf("DEBUG: setDO(ch=%d, on=%d) do_state: 0x%02X -> 0x%02X\n", ch, on, old_state, do_state);
     writeDO();
   }
 }
@@ -703,17 +699,14 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   Serial.print("MQTT CMD: "); Serial.println(cmd);
 
   if (strcmp(cmd, "START") == 0) {
-    Serial.println("DEBUG: START command received");
     if (!remoteMode) {
       Serial.println("MQTT START ignored - in LOCAL mode");
     } else if (state == FAULT) {
       Serial.println("Cannot START while in FAULT state. Send RESET first.");
     } else {
-      Serial.println("DEBUG: Setting startCommand=true...");
       startCommand = true;
       startCommandTime = millis();
       Serial.println("Start command accepted (REMOTE mode)");
-      Serial.println("DEBUG: START command processing complete");
     }
   }
   else if (strcmp(cmd, "STOP") == 0) {
@@ -2271,16 +2264,9 @@ void loop() {
 
     bool desiredDO = (startCommand && state != FAULT && scheduleAllows);
     if (desiredDO != lastDOState) {
-      Serial.printf("DEBUG: Contactor state change needed: %s -> %s\n",
-                    lastDOState ? "ON" : "OFF", desiredDO ? "ON" : "OFF");
-      Serial.printf("DEBUG: startCommand=%d, state=%d, scheduleAllows=%d\n",
-                    startCommand, state, scheduleAllows);
-      Serial.println("DEBUG: About to call setDO for contactor...");
       setDO(DO_CONTACTOR_CH, desiredDO);
-      Serial.println("DEBUG: setDO for contactor returned");
       Serial.printf("Contactor: %s\n", desiredDO ? "ON" : "OFF");
       lastDOState = desiredDO;
-      Serial.println("DEBUG: Contactor state change complete");
     }
   }
 
