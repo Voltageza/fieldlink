@@ -33,7 +33,7 @@
 /* ================= USER CONFIG ================= */
 
 #define FW_NAME    "ESP32 Pump Controller"
-#define FW_VERSION "2.6.2"
+#define FW_VERSION "2.6.3"
 
 // BENCH TEST MODE - disable protections that require pump/load
 #define BENCH_TEST_MODE false  // Set to true for bench testing without pump
@@ -187,6 +187,10 @@ float faultCurrentA = 0, faultCurrentB = 0, faultCurrentC = 0;
 
 // Modbus error tracking
 int modbusFailCount = 0;
+
+// MQTT publish failure tracking
+int mqttPublishFailCount = 0;
+#define MAX_MQTT_PUBLISH_FAILURES 3
 bool sensorOnline = false;
 
 // Connection state
@@ -1207,6 +1211,7 @@ bool connectMQTT() {
   }
 
   mqtt.setServer(mqtt_host, mqtt_port);
+  mqtt.setBufferSize(512);  // Increase from default 256 for larger telemetry messages
   mqtt.setCallback(mqttCallback);
 
   unsigned long startTime = millis();
@@ -2118,6 +2123,10 @@ void setup() {
     wifiConnected = true;
     configLoaded = true;
 
+    // Disable AP mode - we only need station mode after connecting
+    WiFi.mode(WIFI_STA);
+    Serial.println("AP mode disabled (station only)");
+
     // Configure NTP for time sync (GMT+2 for South Africa)
     configTime(2 * 3600, 0, "pool.ntp.org", "time.nist.gov");
     Serial.println("NTP configured");
@@ -2338,8 +2347,22 @@ void loop() {
       }
 
       char buf[512];
-      serializeJson(doc, buf);
-      mqtt.publish(TOPIC_TELEMETRY, buf);
+      size_t len = serializeJson(doc, buf);
+
+      bool published = mqtt.publish(TOPIC_TELEMETRY, buf);
+      if (published) {
+        mqttPublishFailCount = 0;  // Reset on success
+      } else {
+        mqttPublishFailCount++;
+        Serial.printf("MQTT publish failed (count=%d, len=%d)\n", mqttPublishFailCount, len);
+
+        if (mqttPublishFailCount >= MAX_MQTT_PUBLISH_FAILURES) {
+          Serial.println("Too many publish failures - forcing MQTT reconnect");
+          mqtt.disconnect();
+          mqttConnected = false;
+          mqttPublishFailCount = 0;
+        }
+      }
     }
   }
 
