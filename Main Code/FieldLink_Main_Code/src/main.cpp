@@ -23,17 +23,20 @@
 #include <Preferences.h>
 #include <esp_task_wdt.h>
 #include <nvs_flash.h>
+#include "esp_wifi.h"  // For esp_wifi_restore() to clear rogue AP config
 #include <ESPAsyncWebServer.h>
 #include <Wire.h>
 #include <HTTPClient.h>
 #include <ArduinoOTA.h>
 #include <Update.h>
 #include <time.h>
+#include <SPI.h>
+#include <Ethernet.h>
 
 /* ================= USER CONFIG ================= */
 
 #define FW_NAME    "ESP32 Pump Controller"
-#define FW_VERSION "2.6.3"
+#define FW_VERSION "2.7.0"
 
 // BENCH TEST MODE - disable protections that require pump/load
 #define BENCH_TEST_MODE false  // Set to true for bench testing without pump
@@ -100,6 +103,14 @@ char TOPIC_SUBSCRIBE[64] = "";  // Wildcard for subscriptions
 #define BAUDRATE  9600
 #define MODBUS_ID 1
 
+// W5500 Ethernet (SPI)
+#define ETH_CS    16
+#define ETH_SCLK  15
+#define ETH_MOSI  13
+#define ETH_MISO  14
+#define ETH_INT   12
+#define ETH_RST   39
+
 // WAVESHARE I2C PINS (for TCA9554 I/O expander)
 #define I2C_SDA   42
 #define I2C_SCL   41
@@ -152,7 +163,11 @@ bool ruraflexEnabled = false;
 // MQTT clients (TLS and non-TLS)
 WiFiClientSecure espClientSecure;
 WiFiClient espClientInsecure;
+EthernetClient ethClient;  // For Ethernet (non-TLS only with W5500)
 PubSubClient mqtt;
+
+// Ethernet MAC address (will be derived from WiFi MAC)
+byte ethMac[6] = {0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xED};
 ModbusMaster node;
 HardwareSerial RS485(2);
 
@@ -191,13 +206,19 @@ int modbusFailCount = 0;
 // MQTT publish failure tracking
 int mqttPublishFailCount = 0;
 #define MAX_MQTT_PUBLISH_FAILURES 3
+
+// MQTT connection failure tracking (for Ethernet->WiFi fallback)
+int mqttConnectFailCount = 0;
+#define MAX_MQTT_CONNECT_FAILURES 3
 bool sensorOnline = false;
 
 // Connection state
 unsigned long lastMqttRetry = 0;
+bool ethernetConnected = false;
 bool wifiConnected = false;
 bool mqttConnected = false;
 bool configLoaded = false;
+bool useEthernet = false;  // True if using Ethernet, false if using WiFi
 
 // Non-blocking timing
 unsigned long lastTelemetryTime = 0;
@@ -1197,13 +1218,93 @@ void handleSerialConfig() {
 
 /* ================= CONNECTION ================= */
 
+bool initEthernet() {
+  Serial.println("\n=== Initializing Ethernet ===");
+
+  // Reset W5500
+  pinMode(ETH_RST, OUTPUT);
+  digitalWrite(ETH_RST, LOW);
+  delay(50);
+  digitalWrite(ETH_RST, HIGH);
+  delay(50);
+
+  // Initialize SPI with custom pins
+  SPI.begin(ETH_SCLK, ETH_MISO, ETH_MOSI, ETH_CS);
+
+  // Set CS pin
+  Ethernet.init(ETH_CS);
+
+  // Get MAC from WiFi and modify for Ethernet (change locally administered bit)
+  WiFi.macAddress(ethMac);
+  ethMac[0] = (ethMac[0] | 0x02) & 0xFE;  // Set locally administered, clear multicast
+
+  Serial.printf("Ethernet MAC: %02X:%02X:%02X:%02X:%02X:%02X\n",
+                ethMac[0], ethMac[1], ethMac[2], ethMac[3], ethMac[4], ethMac[5]);
+
+  // Try DHCP
+  Serial.println("Requesting IP via DHCP...");
+  if (Ethernet.begin(ethMac, 10000)) {  // 10 second timeout
+    Serial.printf("Ethernet connected! IP: %s\n", Ethernet.localIP().toString().c_str());
+    Serial.printf("Gateway: %s\n", Ethernet.gatewayIP().toString().c_str());
+    Serial.printf("DNS: %s\n", Ethernet.dnsServerIP().toString().c_str());
+    ethernetConnected = true;
+    useEthernet = true;
+    return true;
+  } else {
+    Serial.println("Ethernet DHCP failed - no cable or no DHCP server");
+    ethernetConnected = false;
+    return false;
+  }
+}
+
+void maintainEthernet() {
+  if (useEthernet) {
+    switch (Ethernet.maintain()) {
+      case 1: // Renew failed
+        Serial.println("Ethernet DHCP renew failed");
+        ethernetConnected = false;
+        break;
+      case 2: // Renew success
+        Serial.println("Ethernet DHCP renewed");
+        break;
+      case 3: // Rebind failed
+        Serial.println("Ethernet DHCP rebind failed");
+        ethernetConnected = false;
+        break;
+      case 4: // Rebind success
+        Serial.println("Ethernet DHCP rebind success");
+        break;
+    }
+
+    // Check link status
+    if (Ethernet.linkStatus() == LinkOFF) {
+      if (ethernetConnected) {
+        Serial.println("Ethernet cable disconnected!");
+        ethernetConnected = false;
+      }
+    } else if (!ethernetConnected) {
+      Serial.println("Ethernet cable reconnected, re-init...");
+      initEthernet();
+    }
+  }
+}
+
 bool connectMQTT() {
-  if (!wifiConnected) return false;
+  if (!ethernetConnected && !wifiConnected) return false;
 
-  Serial.printf("Connecting to MQTT: %s:%d (TLS: %s)\n", mqtt_host, mqtt_port, mqtt_use_tls ? "yes" : "no");
+  Serial.printf("Connecting to MQTT: %s:%d (TLS: %s, via %s)\n",
+                mqtt_host, mqtt_port, mqtt_use_tls ? "yes" : "no",
+                useEthernet ? "Ethernet" : "WiFi");
 
-  // Configure client based on TLS setting
-  if (mqtt_use_tls) {
+  // Configure client based on connection type and TLS setting
+  if (useEthernet) {
+    // Ethernet: W5500 doesn't support TLS natively, use non-TLS
+    if (mqtt_use_tls) {
+      Serial.println("WARNING: TLS not supported over Ethernet, using non-TLS on port 1883");
+      mqtt_port = 1883;  // Force non-TLS port
+    }
+    mqtt.setClient(ethClient);
+  } else if (mqtt_use_tls) {
     espClientSecure.setInsecure();  // Skip certificate verification
     mqtt.setClient(espClientSecure);
   } else {
@@ -1237,38 +1338,109 @@ bool connectMQTT() {
 }
 
 void reconnectMQTT() {
-  // Check WiFi status
-  if (WiFi.status() != WL_CONNECTED) {
-    if (wifiConnected) {
-      Serial.println("WiFi disconnected!");
-      wifiConnected = false;
-      mqttConnected = false;
+  // Check network status based on current mode
+  bool networkOk = false;
+
+  if (useEthernet) {
+    // Maintain Ethernet DHCP lease
+    maintainEthernet();
+    networkOk = ethernetConnected;
+
+    if (!networkOk) {
+      // Ethernet failed, try to fall back to WiFi
+      Serial.println("Ethernet down, checking WiFi...");
+      if (WiFi.status() == WL_CONNECTED) {
+        Serial.println("Falling back to WiFi");
+        useEthernet = false;
+        wifiConnected = true;
+        networkOk = true;
+        // Need to reconfigure MQTT client for WiFi
+        mqtt.disconnect();
+        mqttConnected = false;
+      }
     }
-    // WiFiManager will handle reconnection automatically
-    // Just wait for it to reconnect
-    return;
+  } else {
+    // Using WiFi
+    if (WiFi.status() != WL_CONNECTED) {
+      if (wifiConnected) {
+        Serial.println("WiFi disconnected!");
+        wifiConnected = false;
+        mqttConnected = false;
+      }
+      // Try Ethernet as fallback
+      if (initEthernet()) {
+        Serial.println("Switched to Ethernet");
+        networkOk = true;
+        mqtt.disconnect();
+        mqttConnected = false;
+      }
+    } else {
+      if (!wifiConnected) {
+        Serial.printf("WiFi reconnected! IP: %s\n", WiFi.localIP().toString().c_str());
+        wifiConnected = true;
+      }
+      networkOk = true;
+    }
   }
 
-  // WiFi is connected
-  if (!wifiConnected) {
-    Serial.printf("WiFi reconnected! IP: %s\n", WiFi.localIP().toString().c_str());
-    wifiConnected = true;
-  }
+  if (!networkOk) return;
 
   // Handle MQTT reconnection
   if (!mqtt.connected()) {
     unsigned long now = millis();
     if (now - lastMqttRetry > MQTT_RETRY_INTERVAL) {
       lastMqttRetry = now;
-      Serial.println("Attempting MQTT reconnect...");
+      Serial.printf("Attempting MQTT reconnect via %s...\n", useEthernet ? "Ethernet" : "WiFi");
+
+      // Reconfigure client for current network
+      if (useEthernet) {
+        mqtt.setClient(ethClient);
+      } else if (mqtt_use_tls) {
+        espClientSecure.setInsecure();
+        mqtt.setClient(espClientSecure);
+      } else {
+        mqtt.setClient(espClientInsecure);
+      }
+
+      mqtt.setServer(mqtt_host, useEthernet ? 1883 : mqtt_port);
+      mqtt.setBufferSize(512);
 
       if (mqtt.connect(DEVICE_ID, mqtt_user, mqtt_pass)) {
         mqtt.subscribe(TOPIC_SUBSCRIBE);  // Wildcard subscription
         Serial.printf("MQTT reconnected as %s!\n", DEVICE_ID);
         mqttConnected = true;
+        mqttConnectFailCount = 0;  // Reset failure count on success
       } else {
         Serial.printf("MQTT reconnect failed, rc=%d\n", mqtt.state());
         mqttConnected = false;
+        mqttConnectFailCount++;
+
+        // If on Ethernet and MQTT keeps failing (likely TLS issue), fall back to WiFi
+        if (useEthernet && mqttConnectFailCount >= MAX_MQTT_CONNECT_FAILURES) {
+          Serial.println("MQTT over Ethernet failed repeatedly - switching to WiFi for TLS support");
+          mqttConnectFailCount = 0;
+          useEthernet = false;
+          ethernetConnected = false;  // Mark Ethernet as not usable for MQTT
+
+          // Initialize WiFi
+          WiFi.mode(WIFI_STA);
+          WiFi.begin();  // Reconnect with saved credentials
+          Serial.println("Connecting to WiFi...");
+
+          unsigned long wifiStart = millis();
+          while (WiFi.status() != WL_CONNECTED && millis() - wifiStart < 15000) {
+            delay(500);
+            Serial.print(".");
+          }
+
+          if (WiFi.status() == WL_CONNECTED) {
+            Serial.printf("\nWiFi connected! IP: %s\n", WiFi.localIP().toString().c_str());
+            wifiConnected = true;
+            WiFi.softAPdisconnect(true);  // Disable any AP
+          } else {
+            Serial.println("\nWiFi connection failed - will retry");
+          }
+        }
       }
     }
   } else {
@@ -2098,99 +2270,141 @@ void setup() {
   node.preTransmission(preTransmission);
   node.postTransmission(postTransmission);
 
-  // Generate device ID from MAC address (before WiFi connects)
-  WiFi.mode(WIFI_STA);
+  // Generate device ID from MAC address (need WiFi initialized for MAC)
+  WiFi.mode(WIFI_STA);     // Initialize WiFi subsystem
+
+  // One-time fix for rogue "ESP32" AP issue - only runs once per device
+  preferences.begin("fieldlink", false);
+  bool wifiRestoreDone = preferences.getBool("wifi_restored", false);
+  if (!wifiRestoreDone) {
+    Serial.println("First boot: clearing rogue AP config from NVS...");
+    esp_wifi_restore();      // Clear ALL stored WiFi config from NVS
+    preferences.putBool("wifi_restored", true);
+    Serial.println("WiFi config cleared. This will only happen once.");
+  }
+  preferences.end();
+
+  WiFi.persistent(false);  // Don't save WiFi config to flash going forward
+  delay(100);
   generateDeviceId();
   printDeviceInfo();
 
-  // Configure WiFiManager
-  wifiManager.setConfigPortalTimeout(PORTAL_TIMEOUT_S);
-  wifiManager.setAPCallback([](WiFiManager *mgr) {
-    Serial.println("\n*** WIFI SETUP MODE ***");
-    Serial.printf("Connect to WiFi network: %s\n", AP_NAME);
-    Serial.println("Then open http://192.168.4.1 in your browser");
-    Serial.println("Or wait for the captive portal to appear automatically");
-  });
-  wifiManager.setSaveConfigCallback([]() {
-    Serial.println("WiFi credentials saved!");
-  });
+  // === NETWORK PRIORITY: Ethernet first, WiFi fallback ===
 
-  // Try to connect to WiFi, or start captive portal
-  Serial.println("Connecting to WiFi...");
-  if (wifiManager.autoConnect(AP_NAME)) {
-    // Connected successfully
-    Serial.printf("WiFi connected! IP: %s\n", WiFi.localIP().toString().c_str());
-    wifiConnected = true;
+  // Try Ethernet first (has priority)
+  if (initEthernet()) {
+    Serial.println("Using Ethernet as primary connection");
     configLoaded = true;
 
-    // Disable AP mode - we only need station mode after connecting
-    WiFi.mode(WIFI_STA);
-    Serial.println("AP mode disabled (station only)");
-
-    // Configure NTP for time sync (GMT+2 for South Africa)
-    configTime(2 * 3600, 0, "pool.ntp.org", "time.nist.gov");
-    Serial.println("NTP configured");
-
-    // Load MQTT config from NVS
-    loadMqttConfig();
-
-    // Load protection config from NVS
-    loadProtectionConfig();
-
-    // Load schedule config from NVS
-    loadScheduleConfig();
-
-    // Load Ruraflex config from NVS
-    loadRuraflexConfig();
-
-    // Initialize schedule state and auto-start if booting within schedule window
-    wasWithinSchedule = isWithinSchedule();
-    Serial.printf("Schedule init: currently %s schedule window\n", wasWithinSchedule ? "within" : "outside");
-    if ((scheduleEnabled || ruraflexEnabled) && wasWithinSchedule) {
-      startCommand = true;
-      Serial.println("Schedule: Boot within allowed hours, starting pump");
-    }
-
-    // Start web server
-    setupWebServer();
-
-    // Connect to cloud MQTT
-    connectMQTT();
-
-    // Setup ArduinoOTA for wireless uploads
-    ArduinoOTA.setHostname(DEVICE_ID);
-    ArduinoOTA.setPassword(OTA_PASSWORD);
-
-    ArduinoOTA.onStart([]() {
-      String type = (ArduinoOTA.getCommand() == U_FLASH) ? "sketch" : "filesystem";
-      Serial.println("OTA: Start updating " + type);
-    });
-
-    ArduinoOTA.onEnd([]() {
-      Serial.println("\nOTA: Update complete!");
-    });
-
-    ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
-      Serial.printf("OTA Progress: %u%%\r", (progress / (total / 100)));
-    });
-
-    ArduinoOTA.onError([](ota_error_t error) {
-      Serial.printf("OTA Error[%u]: ", error);
-      if (error == OTA_AUTH_ERROR) Serial.println("Auth Failed");
-      else if (error == OTA_BEGIN_ERROR) Serial.println("Begin Failed");
-      else if (error == OTA_CONNECT_ERROR) Serial.println("Connect Failed");
-      else if (error == OTA_RECEIVE_ERROR) Serial.println("Receive Failed");
-      else if (error == OTA_END_ERROR) Serial.println("End Failed");
-    });
-
-    ArduinoOTA.begin();
-    Serial.printf("ArduinoOTA ready. Hostname: %s\n", DEVICE_ID);
+    // Disable WiFi completely when using Ethernet
+    WiFi.mode(WIFI_OFF);
+    Serial.println("WiFi disabled (Ethernet active)");
   } else {
-    Serial.println("Failed to connect to WiFi. Restarting...");
+    // Ethernet failed, use WiFi
+    Serial.println("Ethernet not available, using WiFi...");
+
+    // Configure WiFiManager
+    wifiManager.setConfigPortalTimeout(PORTAL_TIMEOUT_S);
+    wifiManager.setAPCallback([](WiFiManager *mgr) {
+      Serial.println("\n*** WIFI SETUP MODE ***");
+      Serial.printf("Connect to WiFi network: %s\n", AP_NAME);
+      Serial.println("Then open http://192.168.4.1 in your browser");
+      Serial.println("Or wait for the captive portal to appear automatically");
+    });
+    wifiManager.setSaveConfigCallback([]() {
+      Serial.println("WiFi credentials saved!");
+    });
+
+    // Try to connect to WiFi, or start captive portal
+    Serial.println("Connecting to WiFi...");
+    if (wifiManager.autoConnect(AP_NAME)) {
+      // Connected successfully
+      Serial.printf("WiFi connected! IP: %s\n", WiFi.localIP().toString().c_str());
+      wifiConnected = true;
+      configLoaded = true;
+    }
+  }
+
+  // Force disable any rogue AP - but only touch WiFi if we're using it
+  if (!useEthernet) {
+    WiFi.softAPdisconnect(true);
+    WiFi.mode(WIFI_STA);  // Ensure station-only mode
+    Serial.println("Soft AP disabled, WiFi in STA mode");
+  } else {
+    // Keep WiFi completely off when using Ethernet
+    WiFi.mode(WIFI_OFF);
+    Serial.println("WiFi disabled (Ethernet mode)");
+  }
+
+  if (!configLoaded) {
+    Serial.println("Failed to connect to network. Restarting...");
     delay(3000);
     ESP.restart();
   }
 
+  // === Common initialization for both Ethernet and WiFi ===
+
+  // Configure NTP for time sync (GMT+2 for South Africa)
+  configTime(2 * 3600, 0, "pool.ntp.org", "time.nist.gov");
+  Serial.println("NTP configured");
+
+  // Load MQTT config from NVS
+  loadMqttConfig();
+
+  // Load protection config from NVS
+  loadProtectionConfig();
+
+  // Load schedule config from NVS
+  loadScheduleConfig();
+
+  // Load Ruraflex config from NVS
+  loadRuraflexConfig();
+
+  // Initialize schedule state and auto-start if booting within schedule window
+  wasWithinSchedule = isWithinSchedule();
+  Serial.printf("Schedule init: currently %s schedule window\n", wasWithinSchedule ? "within" : "outside");
+  if ((scheduleEnabled || ruraflexEnabled) && wasWithinSchedule) {
+    startCommand = true;
+    Serial.println("Schedule: Boot within allowed hours, starting pump");
+  }
+
+  // Start web server
+  setupWebServer();
+
+  // Connect to cloud MQTT
+  connectMQTT();
+
+  // Setup ArduinoOTA for wireless uploads (works over both Ethernet and WiFi)
+  ArduinoOTA.setHostname(DEVICE_ID);
+  ArduinoOTA.setPassword(OTA_PASSWORD);
+
+  ArduinoOTA.onStart([]() {
+    String type = (ArduinoOTA.getCommand() == U_FLASH) ? "sketch" : "filesystem";
+    Serial.println("OTA: Start updating " + type);
+  });
+
+  ArduinoOTA.onEnd([]() {
+    Serial.println("\nOTA: Update complete!");
+  });
+
+  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
+    Serial.printf("OTA Progress: %u%%\r", (progress / (total / 100)));
+  });
+
+  ArduinoOTA.onError([](ota_error_t error) {
+    Serial.printf("OTA Error[%u]: ", error);
+    if (error == OTA_AUTH_ERROR) Serial.println("Auth Failed");
+    else if (error == OTA_BEGIN_ERROR) Serial.println("Begin Failed");
+    else if (error == OTA_CONNECT_ERROR) Serial.println("Connect Failed");
+    else if (error == OTA_RECEIVE_ERROR) Serial.println("Receive Failed");
+    else if (error == OTA_END_ERROR) Serial.println("End Failed");
+  });
+
+  ArduinoOTA.begin();
+  Serial.printf("ArduinoOTA ready. Hostname: %s\n", DEVICE_ID);
+
+  Serial.printf("\n=== Network: %s ===\n", useEthernet ? "ETHERNET (priority)" : "WiFi");
+  Serial.printf("IP Address: %s\n", useEthernet ? Ethernet.localIP().toString().c_str() : WiFi.localIP().toString().c_str());
   Serial.println("Setup complete. Entering main loop...");
 }
 
@@ -2333,6 +2547,7 @@ void loop() {
       doc["sensor"] = sensorOnline;
       doc["uptime"] = now / 1000;
       doc["mode"] = remoteMode ? "REMOTE" : "LOCAL";
+      doc["network"] = useEthernet ? "ETH" : "WiFi";
       doc["di"] = diStatus;
       doc["do"] = do_state;
       doc["hardware_type"] = HW_TYPE;
