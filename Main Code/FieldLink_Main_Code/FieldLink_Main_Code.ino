@@ -24,11 +24,12 @@
 #include <esp_task_wdt.h>
 #include <nvs_flash.h>
 #include <ESPAsyncWebServer.h>
+#include <esp_wifi.h>
 
 /* ================= USER CONFIG ================= */
 
 #define FW_NAME    "ESP32 Pump Controller"
-#define FW_VERSION "1.7.0"
+#define FW_VERSION "1.7.1"
 
 // Captive portal timeout (seconds) - how long to wait for user to configure WiFi
 #define PORTAL_TIMEOUT_S    180
@@ -1075,6 +1076,16 @@ void setup() {
     nvs_flash_erase();
     nvs_flash_init();
   }
+
+  // One-time WiFi config restore to clear any rogue AP settings
+  preferences.begin("fieldlink", false);
+  if (!preferences.getBool("wifi_restored", false)) {
+    Serial.println("Clearing stored WiFi config (one-time)...");
+    esp_wifi_restore();
+    preferences.putBool("wifi_restored", true);
+    Serial.println("WiFi config cleared");
+  }
+  preferences.end();
 
   Serial.println("Type 'HELP' for serial commands");
 
