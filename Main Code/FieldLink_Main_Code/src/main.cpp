@@ -36,7 +36,7 @@
 /* ================= USER CONFIG ================= */
 
 #define FW_NAME    "ESP32 Pump Controller"
-#define FW_VERSION "2.7.0"
+#define FW_VERSION "2.8.0"
 
 // BENCH TEST MODE - disable protections that require pump/load
 #define BENCH_TEST_MODE false  // Set to true for bench testing without pump
@@ -49,6 +49,8 @@
 #define WIFI_TIMEOUT_MS     30000
 #define MQTT_TIMEOUT_MS     10000
 #define MQTT_RETRY_INTERVAL 5000
+#define MQTT_KEEPALIVE_S    30       // MQTT keepalive interval (seconds)
+#define MQTT_STALE_TIMEOUT_MS 90000  // Force reconnect if no successful publish for 90s
 
 // Watchdog timeout (seconds)
 #define WDT_TIMEOUT_S       30
@@ -94,6 +96,7 @@ char DEVICE_ID[16] = "";
 char AP_NAME[32] = "";
 char TOPIC_TELEMETRY[64] = "";
 char TOPIC_COMMAND[64] = "";
+char TOPIC_STATUS[64] = "";     // Online/offline status (LWT)
 char TOPIC_SUBSCRIBE[64] = "";  // Wildcard for subscriptions
 
 // RS485
@@ -214,6 +217,7 @@ bool sensorOnline = false;
 
 // Connection state
 unsigned long lastMqttRetry = 0;
+unsigned long lastMqttActivity = 0;  // Last successful MQTT publish/receive
 bool ethernetConnected = false;
 bool wifiConnected = false;
 bool mqttConnected = false;
@@ -732,6 +736,9 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
     return;
   }
 
+  // Update activity tracker - we received a valid message
+  lastMqttActivity = millis();
+
   char cmd[MAX_PAYLOAD_SIZE];
   memcpy(cmd, payload, length);
   cmd[length] = '\0';
@@ -1154,10 +1161,14 @@ void handleSerialConfig() {
       Serial.printf("RSSI: %d dBm\n", WiFi.RSSI());
     }
     Serial.printf("MQTT: %s\n", mqttConnected ? "Connected" : "Disconnected");
+    if (mqttConnected && lastMqttActivity > 0) {
+      Serial.printf("MQTT last activity: %lu seconds ago\n", (millis() - lastMqttActivity) / 1000);
+    }
     Serial.printf("Sensor: %s\n", sensorOnline ? "Online" : "Offline");
     Serial.println("\n--- MQTT Topics ---");
     Serial.printf("Telemetry: %s\n", TOPIC_TELEMETRY);
     Serial.printf("Command: %s\n", TOPIC_COMMAND);
+    Serial.printf("Status: %s (LWT)\n", TOPIC_STATUS);
     Serial.println("\n--- Pump State ---");
     Serial.printf("State: %s\n", state==RUNNING?"RUNNING":state==FAULT?"FAULT":"STOPPED");
     Serial.printf("Start Command: %s\n", startCommand ? "Yes" : "No");
@@ -1313,14 +1324,20 @@ bool connectMQTT() {
 
   mqtt.setServer(mqtt_host, mqtt_port);
   mqtt.setBufferSize(512);  // Increase from default 256 for larger telemetry messages
+  mqtt.setKeepAlive(MQTT_KEEPALIVE_S);  // Set keepalive for connection health
   mqtt.setCallback(mqttCallback);
 
   unsigned long startTime = millis();
   while (!mqtt.connected()) {
-    if (mqtt.connect(DEVICE_ID, mqtt_user, mqtt_pass)) {
+    // Connect with Last Will and Testament (LWT) for offline detection
+    // LWT: willTopic, willQos, willRetain, willMessage
+    if (mqtt.connect(DEVICE_ID, mqtt_user, mqtt_pass, TOPIC_STATUS, 0, true, "offline")) {
       mqtt.subscribe(TOPIC_SUBSCRIBE);  // Wildcard subscription
+      mqtt.publish(TOPIC_STATUS, "online", true);  // Publish online status (retained)
+      lastMqttActivity = millis();  // Initialize activity tracker
       Serial.printf("MQTT connected as %s!\n", DEVICE_ID);
       Serial.printf("Subscribed to: %s\n", TOPIC_SUBSCRIBE);
+      Serial.printf("Status topic: %s (LWT enabled)\n", TOPIC_STATUS);
       mqttConnected = true;
       return true;
     }
@@ -1404,9 +1421,13 @@ void reconnectMQTT() {
 
       mqtt.setServer(mqtt_host, useEthernet ? 1883 : mqtt_port);
       mqtt.setBufferSize(512);
+      mqtt.setKeepAlive(MQTT_KEEPALIVE_S);
 
-      if (mqtt.connect(DEVICE_ID, mqtt_user, mqtt_pass)) {
+      // Connect with Last Will and Testament (LWT)
+      if (mqtt.connect(DEVICE_ID, mqtt_user, mqtt_pass, TOPIC_STATUS, 0, true, "offline")) {
         mqtt.subscribe(TOPIC_SUBSCRIBE);  // Wildcard subscription
+        mqtt.publish(TOPIC_STATUS, "online", true);  // Publish online status (retained)
+        lastMqttActivity = millis();  // Reset activity tracker
         Serial.printf("MQTT reconnected as %s!\n", DEVICE_ID);
         mqttConnected = true;
         mqttConnectFailCount = 0;  // Reset failure count on success
@@ -1445,6 +1466,16 @@ void reconnectMQTT() {
     }
   } else {
     mqttConnected = true;
+
+    // Staleness detection: if connected but no successful activity for too long, force reconnect
+    unsigned long now = millis();
+    if (lastMqttActivity > 0 && (now - lastMqttActivity > MQTT_STALE_TIMEOUT_MS)) {
+      Serial.printf("MQTT connection stale (no activity for %lus) - forcing reconnect\n",
+                    (now - lastMqttActivity) / 1000);
+      mqtt.disconnect();
+      mqttConnected = false;
+      lastMqttActivity = 0;  // Reset to avoid immediate re-trigger
+    }
   }
 }
 
@@ -1463,6 +1494,7 @@ void generateDeviceId() {
   // Generate topic strings
   snprintf(TOPIC_TELEMETRY, sizeof(TOPIC_TELEMETRY), "fieldlink/%s/telemetry", DEVICE_ID);
   snprintf(TOPIC_COMMAND, sizeof(TOPIC_COMMAND), "fieldlink/%s/command", DEVICE_ID);
+  snprintf(TOPIC_STATUS, sizeof(TOPIC_STATUS), "fieldlink/%s/status", DEVICE_ID);
   snprintf(TOPIC_SUBSCRIBE, sizeof(TOPIC_SUBSCRIBE), "fieldlink/%s/#", DEVICE_ID);  // Wildcard
 }
 
@@ -1774,6 +1806,7 @@ void setupWebServer() {
     doc["mqtt_connected"] = mqttConnected;
     doc["topic_telemetry"] = TOPIC_TELEMETRY;
     doc["topic_command"] = TOPIC_COMMAND;
+    doc["topic_status"] = TOPIC_STATUS;
     doc["dashboard_url"] = String("https://voltageza.github.io/fieldlink-dashboard/?device=") + DEVICE_ID;
     String response;
     serializeJson(doc, response);
@@ -2567,6 +2600,7 @@ void loop() {
       bool published = mqtt.publish(TOPIC_TELEMETRY, buf);
       if (published) {
         mqttPublishFailCount = 0;  // Reset on success
+        lastMqttActivity = now;    // Update activity tracker
       } else {
         mqttPublishFailCount++;
         Serial.printf("MQTT publish failed (count=%d, len=%d)\n", mqttPublishFailCount, len);
