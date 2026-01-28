@@ -28,7 +28,7 @@
 /* ================= USER CONFIG ================= */
 
 #define FW_NAME    "ESP32 Pump Controller"
-#define FW_VERSION "1.6.0"
+#define FW_VERSION "1.7.0"
 
 // Captive portal timeout (seconds) - how long to wait for user to configure WiFi
 #define PORTAL_TIMEOUT_S    180
@@ -93,11 +93,16 @@ char TOPIC_COMMAND[64] = "";
 // DO CHANNEL USED FOR CONTACTOR
 #define DO_CONTACTOR_CH  0
 
-// Protection
-#define RUN_THRESHOLD  5.0
-#define MAX_CURRENT 120.0
-#define DRY_CURRENT    0.5
-#define START_TIMEOUT  10000
+// Protection defaults (can be overridden via MQTT)
+#define DEFAULT_RUN_THRESHOLD  5.0
+#define DEFAULT_MAX_CURRENT    120.0
+#define DEFAULT_DRY_CURRENT    0.5
+#define START_TIMEOUT          10000
+
+// Configurable protection thresholds (loaded from Preferences)
+float runThreshold = DEFAULT_RUN_THRESHOLD;
+float maxCurrent = DEFAULT_MAX_CURRENT;
+float dryCurrent = DEFAULT_DRY_CURRENT;
 
 /* =============================================== */
 
@@ -541,6 +546,31 @@ bool readCurrents() {
   return true;
 }
 
+/* ================= THRESHOLDS ================= */
+
+void loadThresholds() {
+  preferences.begin("fieldlink", true);  // read-only
+  runThreshold = preferences.getFloat("runThresh", DEFAULT_RUN_THRESHOLD);
+  maxCurrent = preferences.getFloat("maxCurrent", DEFAULT_MAX_CURRENT);
+  dryCurrent = preferences.getFloat("dryCurrent", DEFAULT_DRY_CURRENT);
+  preferences.end();
+
+  Serial.println("Thresholds loaded:");
+  Serial.printf("  Run Threshold: %.1f A\n", runThreshold);
+  Serial.printf("  Max Current (Overcurrent): %.1f A\n", maxCurrent);
+  Serial.printf("  Dry Run Current: %.1f A\n", dryCurrent);
+}
+
+void saveThresholds() {
+  preferences.begin("fieldlink", false);  // read-write
+  preferences.putFloat("runThresh", runThreshold);
+  preferences.putFloat("maxCurrent", maxCurrent);
+  preferences.putFloat("dryCurrent", dryCurrent);
+  preferences.end();
+
+  Serial.println("Thresholds saved to flash");
+}
+
 /* ================= MQTT ================= */
 
 void mqttCallback(char* topic, byte* payload, unsigned int length) {
@@ -582,6 +612,59 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   }
   else if (strcmp(cmd, "STATUS") == 0) {
     lastTelemetryTime = 0;
+  }
+  else if (cmd[0] == '{') {
+    // JSON command
+    StaticJsonDocument<256> doc;
+    DeserializationError err = deserializeJson(doc, cmd);
+    if (err) {
+      Serial.printf("JSON parse error: %s\n", err.c_str());
+      return;
+    }
+
+    const char* command = doc["command"];
+    if (!command) return;
+
+    if (strcmp(command, "SET_THRESHOLDS") == 0) {
+      bool changed = false;
+
+      if (doc.containsKey("max_current")) {
+        float val = doc["max_current"];
+        if (val >= 1.0 && val <= 500.0) {
+          maxCurrent = val;
+          changed = true;
+          Serial.printf("Max current set to: %.1f A\n", maxCurrent);
+        }
+      }
+
+      if (doc.containsKey("dry_current")) {
+        float val = doc["dry_current"];
+        if (val >= 0.0 && val <= 50.0) {
+          dryCurrent = val;
+          changed = true;
+          Serial.printf("Dry run current set to: %.1f A\n", dryCurrent);
+        }
+      }
+
+      if (doc.containsKey("run_threshold")) {
+        float val = doc["run_threshold"];
+        if (val >= 0.1 && val <= 100.0) {
+          runThreshold = val;
+          changed = true;
+          Serial.printf("Run threshold set to: %.1f A\n", runThreshold);
+        }
+      }
+
+      if (changed) {
+        saveThresholds();
+        // Send updated settings in next telemetry
+        lastTelemetryTime = 0;
+      }
+    }
+    else if (strcmp(command, "GET_SETTINGS") == 0) {
+      // Force immediate telemetry with settings
+      lastTelemetryTime = 0;
+    }
   }
 }
 
@@ -633,14 +716,14 @@ float getMaxCurrent() {
 }
 
 PumpState evaluateState() {
-  float maxCurrent = getMaxCurrent();
+  float currentMax = getMaxCurrent();
 
-  if (Ia > MAX_CURRENT || Ib > MAX_CURRENT || Ic > MAX_CURRENT) {
+  if (Ia > maxCurrent || Ib > maxCurrent || Ic > maxCurrent) {
     return FAULT;
   }
 
-  if (DRY_CURRENT > 0 && startCommand && state == RUNNING) {
-    if (maxCurrent < DRY_CURRENT) {
+  if (dryCurrent > 0 && startCommand && state == RUNNING) {
+    if (currentMax < dryCurrent) {
       return FAULT;
     }
   }
@@ -653,12 +736,12 @@ PumpState evaluateState() {
   }
 
   if (state == RUNNING) {
-    if (maxCurrent < (RUN_THRESHOLD - HYSTERESIS_CURRENT)) {
+    if (currentMax < (runThreshold - HYSTERESIS_CURRENT)) {
       return STOPPED;
     }
     return RUNNING;
   } else {
-    if (maxCurrent > RUN_THRESHOLD) {
+    if (currentMax > runThreshold) {
       return RUNNING;
     }
     return STOPPED;
@@ -1015,6 +1098,9 @@ void setup() {
   generateDeviceId();
   printDeviceInfo();
 
+  // Load protection thresholds from flash
+  loadThresholds();
+
   // Configure WiFiManager
   wifiManager.setConfigPortalTimeout(PORTAL_TIMEOUT_S);
   wifiManager.setAPCallback([](WiFiManager *mgr) {
@@ -1080,7 +1166,7 @@ void loop() {
     lastTelemetryTime = now;
 
     if (mqttConnected && mqtt.connected()) {
-      StaticJsonDocument<256> doc;
+      StaticJsonDocument<384> doc;
 
       doc["Ia"] = round(Ia * 100) / 100.0;
       doc["Ib"] = round(Ib * 100) / 100.0;
@@ -1095,7 +1181,12 @@ void loop() {
       doc["sensor"] = sensorOnline;
       doc["uptime"] = now / 1000;
 
-      char buf[256];
+      // Include configurable thresholds
+      doc["max_current"] = maxCurrent;
+      doc["dry_current"] = dryCurrent;
+      doc["run_threshold"] = runThreshold;
+
+      char buf[384];
       serializeJson(doc, buf);
       mqtt.publish(TOPIC_TELEMETRY, buf);
     }
