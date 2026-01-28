@@ -29,7 +29,7 @@
 /* ================= USER CONFIG ================= */
 
 #define FW_NAME    "ESP32 Pump Controller"
-#define FW_VERSION "1.7.1"
+#define FW_VERSION "1.8.0"
 
 // Captive portal timeout (seconds) - how long to wait for user to configure WiFi
 #define PORTAL_TIMEOUT_S    180
@@ -93,6 +93,9 @@ char TOPIC_COMMAND[64] = "";
 
 // DO CHANNEL USED FOR CONTACTOR
 #define DO_CONTACTOR_CH  0
+
+// DO CHANNEL FOR FAULT ALARM OUTPUT
+#define DO_FAULT_CH  5
 
 // Protection defaults (can be overridden via MQTT)
 #define DEFAULT_RUN_THRESHOLD  5.0
@@ -691,6 +694,7 @@ void triggerFault(FaultType type) {
 
     startCommand = false;
     setDO(DO_CONTACTOR_CH, false);
+    setDO(DO_FAULT_CH, true);  // Activate fault alarm output
 
     Serial.printf("!!! FAULT TRIGGERED: %s !!!\n", faultTypeToString(type));
     Serial.printf("Currents at fault: Ia=%.2f Ib=%.2f Ic=%.2f\n", Ia, Ib, Ic);
@@ -705,6 +709,7 @@ void resetFault() {
     pendingState = STOPPED;
     stateDebounceCounter = 0;
     startCommand = false;
+    setDO(DO_FAULT_CH, false);  // Deactivate fault alarm output
     Serial.println("Fault cleared. Ready to restart.");
   }
 }
