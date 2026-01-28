@@ -36,7 +36,7 @@
 /* ================= USER CONFIG ================= */
 
 #define FW_NAME    "ESP32 Pump Controller"
-#define FW_VERSION "2.8.0"
+#define FW_VERSION "2.8.1"
 
 // BENCH TEST MODE - disable protections that require pump/load
 #define BENCH_TEST_MODE false  // Set to true for bench testing without pump
@@ -123,6 +123,7 @@ char TOPIC_SUBSCRIBE[64] = "";  // Wildcard for subscriptions
 #define DO_CONTACTOR_CH  0   // Main contactor relay
 #define DO_RUN_LED_CH    1   // RUN indicator (green)
 #define DO_FAULT_LED_CH  2   // FAULT indicator (red)
+#define DO_FAULT_CH      4   // Fault alarm output (physical DO5)
 
 // WAVESHARE DIGITAL INPUT PINS (directly connected to ESP32 GPIOs)
 #define DI1_PIN  4   // START button (NO - Normally Open)
@@ -1023,6 +1024,7 @@ void triggerFault(FaultType type) {
 
     startCommand = false;
     setDO(DO_CONTACTOR_CH, false);
+    setDO(DO_FAULT_CH, true);  // Activate fault alarm output (DO5)
 
     Serial.printf("!!! FAULT TRIGGERED: %s !!!\n", faultTypeToString(type));
     Serial.printf("Currents at fault: Ia=%.2f Ib=%.2f Ic=%.2f\n", Ia, Ib, Ic);
@@ -1040,6 +1042,7 @@ void resetFault() {
     pendingState = STOPPED;
     stateDebounceCounter = 0;
     startCommand = false;
+    setDO(DO_FAULT_CH, false);  // Deactivate fault alarm output (DO5)
     Serial.println("Fault cleared. Ready to restart.");
   }
 }
@@ -1214,12 +1217,60 @@ void handleSerialConfig() {
     delay(500);
     ESP.restart();
   }
+  else if (input == "TEST_FAULT") {
+    Serial.println("Testing fault trigger...");
+    Serial.printf("do_state BEFORE: 0x%02X\n", do_state);
+    triggerFault(SENSOR_FAULT);
+    Serial.printf("do_state AFTER:  0x%02X\n", do_state);
+    Serial.printf("DO_FAULT_CH = %d, expected bit = 0x%02X\n", DO_FAULT_CH, (1 << DO_FAULT_CH));
+  }
+  else if (input == "DO5ON") {
+    Serial.println("Turning DO5 ON...");
+    setDO(4, true);  // Channel 4 = physical DO5
+    Serial.printf("do_state: 0x%02X\n", do_state);
+  }
+  else if (input == "DO5OFF") {
+    Serial.println("Turning DO5 OFF...");
+    setDO(4, false);
+    Serial.printf("do_state: 0x%02X\n", do_state);
+  }
+  else if (input == "I2CTEST") {
+    Serial.println("Testing I2C TCA9554...");
+    Wire.beginTransmission(TCA9554_ADDR);
+    uint8_t err = Wire.endTransmission();
+    Serial.printf("I2C probe result: %d (0=OK)\n", err);
+
+    // Try to read back output register
+    Wire.beginTransmission(TCA9554_ADDR);
+    Wire.write(0x01);  // Output port register
+    Wire.endTransmission();
+    Wire.requestFrom(TCA9554_ADDR, (uint8_t)1);
+    if (Wire.available()) {
+      uint8_t val = Wire.read();
+      Serial.printf("TCA9554 output register: 0x%02X (expected: 0x%02X)\n", val, do_state);
+    } else {
+      Serial.println("Failed to read from TCA9554");
+    }
+  }
+  else if (input.startsWith("DO") && input.length() >= 4) {
+    // DOxON or DOxOFF where x is 1-8
+    int ch = input.charAt(2) - '1';  // Convert '1'-'8' to 0-7
+    bool on = input.endsWith("ON");
+    if (ch >= 0 && ch < 8) {
+      setDO(ch, on);
+      Serial.printf("DO%d set to %s (channel %d, do_state=0x%02X)\n", ch+1, on?"ON":"OFF", ch, do_state);
+    }
+  }
   else if (input == "HELP") {
     Serial.println("\n=== SERIAL COMMANDS ===");
     Serial.println("STATUS       - Show system status");
     Serial.println("START        - Start pump");
     Serial.println("STOP         - Stop pump");
     Serial.println("FAULT_RESET  - Clear fault condition");
+    Serial.println("TEST_FAULT   - Test fault alarm output");
+    Serial.println("DO5ON/DO5OFF - Test DO5 directly");
+    Serial.println("DOxON/DOxOFF - Control any DO (x=1-8)");
+    Serial.println("I2CTEST      - Test I2C communication with TCA9554");
     Serial.println("WIFI_RESET   - Clear WiFi and restart setup portal");
     Serial.println("REBOOT       - Restart device");
     Serial.println("FACTORY_RESET- Clear all settings");
@@ -2525,8 +2576,8 @@ void loop() {
   // setDO(DO_RUN_LED_CH, state == RUNNING);
   // setDO(DO_FAULT_LED_CH, state == FAULT);
 
-  // Force ALL outputs except contactor to OFF
-  do_state |= 0xFE;  // Ensure bits 1-7 are always 1 (OFF), preserve bit 0 (contactor)
+  // Force unused outputs OFF, preserve contactor (bit 0) and fault alarm (bit 4)
+  do_state |= 0xEE;  // 0xEE = 1110 1110, preserves bits 0 and 4
   writeDO();         // Always sync to hardware
 
   if (now - lastSensorReadTime >= SENSOR_READ_INTERVAL_MS) {
