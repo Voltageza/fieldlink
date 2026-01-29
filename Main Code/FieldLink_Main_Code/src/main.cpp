@@ -150,9 +150,9 @@ float dryCurrentThreshold = 0.5;    // Dry run detection threshold (A)
 bool overcurrentProtectionEnabled = true;
 bool dryRunProtectionEnabled = true;
 
-// Fault delay settings (stored in NVS)
-uint32_t overcurrentDelayMs = 0;  // 0 = immediate, range 0-30000
-uint32_t dryrunDelayMs = 0;
+// Fault delay settings (stored in NVS, in seconds)
+uint32_t overcurrentDelayS = 0;  // 0 = immediate, range 0-30
+uint32_t dryrunDelayS = 0;
 
 // Fault delay timers
 unsigned long overcurrentStartTime = 0;
@@ -841,16 +841,16 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
         Serial.printf("Thresholds updated: max=%.1fA, dry=%.1fA\n", maxCurrentThreshold, dryCurrentThreshold);
       }
       else if (command && strcmp(command, "SET_DELAYS") == 0) {
-        if (doc.containsKey("overcurrent_delay_ms")) {
-          uint32_t val = doc["overcurrent_delay_ms"];
-          if (val <= 30000) overcurrentDelayMs = val;
+        if (doc.containsKey("overcurrent_delay_s")) {
+          uint32_t val = doc["overcurrent_delay_s"];
+          if (val <= 30) overcurrentDelayS = val;
         }
-        if (doc.containsKey("dryrun_delay_ms")) {
-          uint32_t val = doc["dryrun_delay_ms"];
-          if (val <= 30000) dryrunDelayMs = val;
+        if (doc.containsKey("dryrun_delay_s")) {
+          uint32_t val = doc["dryrun_delay_s"];
+          if (val <= 30) dryrunDelayS = val;
         }
         saveProtectionConfig();
-        Serial.printf("Delays updated: overcurrent=%lums, dryrun=%lums\n", overcurrentDelayMs, dryrunDelayMs);
+        Serial.printf("Delays updated: overcurrent=%lus, dryrun=%lus\n", overcurrentDelayS, dryrunDelayS);
       }
       else if (command && strcmp(command, "SET_SCHEDULE") == 0) {
         if (doc.containsKey("enabled"))
@@ -894,8 +894,8 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
         resp["dryrun_protection"] = dryRunProtectionEnabled;
         resp["max_current"] = maxCurrentThreshold;
         resp["dry_current"] = dryCurrentThreshold;
-        resp["overcurrent_delay_ms"] = overcurrentDelayMs;
-        resp["dryrun_delay_ms"] = dryrunDelayMs;
+        resp["overcurrent_delay_s"] = overcurrentDelayS;
+        resp["dryrun_delay_s"] = dryrunDelayS;
         struct tm timeinfo;
         if (getLocalTime(&timeinfo, 10)) {
           char timeStr[9];
@@ -1106,10 +1106,10 @@ PumpState evaluateState() {
     if (!overcurrentConditionActive) {
       overcurrentConditionActive = true;
       overcurrentStartTime = now;
-      Serial.printf("Overcurrent condition started (delay=%lums)\n", overcurrentDelayMs);
+      Serial.printf("Overcurrent condition started (delay=%lus)\n", overcurrentDelayS);
     }
-    // Check if delay has elapsed
-    if (overcurrentDelayMs == 0 || (now - overcurrentStartTime) >= overcurrentDelayMs) {
+    // Check if delay has elapsed (convert seconds to ms)
+    if (overcurrentDelayS == 0 || (now - overcurrentStartTime) >= (overcurrentDelayS * 1000)) {
       return FAULT;
     }
   } else {
@@ -1127,10 +1127,10 @@ PumpState evaluateState() {
       if (!dryrunConditionActive) {
         dryrunConditionActive = true;
         dryrunStartTime = now;
-        Serial.printf("Dry run condition started (delay=%lums)\n", dryrunDelayMs);
+        Serial.printf("Dry run condition started (delay=%lus)\n", dryrunDelayS);
       }
-      // Check if delay has elapsed
-      if (dryrunDelayMs == 0 || (now - dryrunStartTime) >= dryrunDelayMs) {
+      // Check if delay has elapsed (convert seconds to ms)
+      if (dryrunDelayS == 0 || (now - dryrunStartTime) >= (dryrunDelayS * 1000)) {
         return FAULT;
       }
     } else {
@@ -1712,11 +1712,11 @@ void loadProtectionConfig() {
   dryRunProtectionEnabled = preferences.getBool("dryrun", true);
   maxCurrentThreshold = preferences.getFloat("max_current", 120.0);
   dryCurrentThreshold = preferences.getFloat("dry_current", 0.5);
-  overcurrentDelayMs = preferences.getULong("oc_delay", 0);
-  dryrunDelayMs = preferences.getULong("dr_delay", 0);
+  overcurrentDelayS = preferences.getULong("oc_delay", 0);
+  dryrunDelayS = preferences.getULong("dr_delay", 0);
   preferences.end();
-  Serial.printf("Protection config loaded: max=%.1fA, dry=%.1fA, oc_delay=%lums, dr_delay=%lums\n",
-                maxCurrentThreshold, dryCurrentThreshold, overcurrentDelayMs, dryrunDelayMs);
+  Serial.printf("Protection config loaded: max=%.1fA, dry=%.1fA, oc_delay=%lus, dr_delay=%lus\n",
+                maxCurrentThreshold, dryCurrentThreshold, overcurrentDelayS, dryrunDelayS);
 }
 
 void saveProtectionConfig() {
@@ -1725,11 +1725,11 @@ void saveProtectionConfig() {
   preferences.putBool("dryrun", dryRunProtectionEnabled);
   preferences.putFloat("max_current", maxCurrentThreshold);
   preferences.putFloat("dry_current", dryCurrentThreshold);
-  preferences.putULong("oc_delay", overcurrentDelayMs);
-  preferences.putULong("dr_delay", dryrunDelayMs);
+  preferences.putULong("oc_delay", overcurrentDelayS);
+  preferences.putULong("dr_delay", dryrunDelayS);
   preferences.end();
-  Serial.printf("Protection config saved: max=%.1fA, dry=%.1fA, oc_delay=%lums, dr_delay=%lums\n",
-                maxCurrentThreshold, dryCurrentThreshold, overcurrentDelayMs, dryrunDelayMs);
+  Serial.printf("Protection config saved: max=%.1fA, dry=%.1fA, oc_delay=%lus, dr_delay=%lus\n",
+                maxCurrentThreshold, dryCurrentThreshold, overcurrentDelayS, dryrunDelayS);
 }
 
 /* ================= SCHEDULE CONFIG ================= */
