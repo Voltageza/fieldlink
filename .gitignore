@@ -1,3 +1,7 @@
+# Secrets (never commit!)
+secrets.h
+**/secrets.h
+
 # PlatformIO
 .pio/
 .pioenvs/
