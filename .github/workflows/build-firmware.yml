@@ -35,24 +35,25 @@ jobs:
           OTA_PASS: ${{ secrets.OTA_PASSWORD }}
           WEB_PASS: ${{ secrets.WEB_AUTH_PASS }}
         run: |
-          python3 << 'PYEOF'
+          python3 -c "
           import os
-          content = f'''#ifndef SECRETS_H
-          #define SECRETS_H
-          #define DEFAULT_MQTT_HOST "{os.environ['MQTT_HOST']}"
-          #define DEFAULT_MQTT_PORT 8883
-          #define DEFAULT_MQTT_USER "{os.environ['MQTT_USER']}"
-          #define DEFAULT_MQTT_PASS "{os.environ['MQTT_PASS']}"
-          #define NOTIFICATION_WEBHOOK_URL "{os.environ['WEBHOOK_URL']}"
-          #define OTA_PASSWORD "{os.environ['OTA_PASS']}"
-          #define WEB_AUTH_USER "admin"
-          #define WEB_AUTH_PASS "{os.environ['WEB_PASS']}"
-          #endif
-          '''
+          lines = [
+              '#ifndef SECRETS_H',
+              '#define SECRETS_H',
+              '#define DEFAULT_MQTT_HOST \"' + os.environ.get('MQTT_HOST', '').strip() + '\"',
+              '#define DEFAULT_MQTT_PORT 8883',
+              '#define DEFAULT_MQTT_USER \"' + os.environ.get('MQTT_USER', '').strip() + '\"',
+              '#define DEFAULT_MQTT_PASS \"' + os.environ.get('MQTT_PASS', '').strip() + '\"',
+              '#define NOTIFICATION_WEBHOOK_URL \"' + os.environ.get('WEBHOOK_URL', '').strip() + '\"',
+              '#define OTA_PASSWORD \"' + os.environ.get('OTA_PASS', '').strip() + '\"',
+              '#define WEB_AUTH_USER \"admin\"',
+              '#define WEB_AUTH_PASS \"' + os.environ.get('WEB_PASS', '').strip() + '\"',
+              '#endif',
+          ]
           with open('Main Code/FieldLink_Main_Code/src/secrets.h', 'w') as f:
-              f.write(content)
-          print("secrets.h created successfully")
-          PYEOF
+              f.write('\n'.join(lines) + '\n')
+          print('secrets.h created successfully')
+          "
 
       - name: Build firmware
         run: |
