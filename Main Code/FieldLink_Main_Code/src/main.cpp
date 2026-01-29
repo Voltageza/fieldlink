@@ -140,9 +140,11 @@ char TOPIC_SUBSCRIBE[64] = "";  // Wildcard for subscriptions
 
 // Protection
 #define RUN_THRESHOLD  5.0
-#define MAX_CURRENT 120.0
-#define DRY_CURRENT    0.5
 #define START_TIMEOUT  10000
+
+// Configurable protection thresholds (stored in NVS)
+float maxCurrentThreshold = 120.0;  // Overcurrent trip threshold (A)
+float dryCurrentThreshold = 0.5;    // Dry run detection threshold (A)
 
 // Protection enable flags
 bool overcurrentProtectionEnabled = true;
@@ -813,6 +815,18 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
         saveProtectionConfig();
         Serial.println("Protection settings updated via MQTT");
       }
+      else if (command && strcmp(command, "SET_THRESHOLDS") == 0) {
+        if (doc.containsKey("max_current")) {
+          float val = doc["max_current"];
+          if (val >= 1.0 && val <= 500.0) maxCurrentThreshold = val;
+        }
+        if (doc.containsKey("dry_current")) {
+          float val = doc["dry_current"];
+          if (val >= 0.0 && val <= 50.0) dryCurrentThreshold = val;
+        }
+        saveProtectionConfig();
+        Serial.printf("Thresholds updated: max=%.1fA, dry=%.1fA\n", maxCurrentThreshold, dryCurrentThreshold);
+      }
       else if (command && strcmp(command, "SET_SCHEDULE") == 0) {
         if (doc.containsKey("enabled"))
           scheduleEnabled = doc["enabled"];
@@ -853,6 +867,8 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
         resp["ruraflex_enabled"] = ruraflexEnabled;
         resp["overcurrent_protection"] = overcurrentProtectionEnabled;
         resp["dryrun_protection"] = dryRunProtectionEnabled;
+        resp["max_current"] = maxCurrentThreshold;
+        resp["dry_current"] = dryCurrentThreshold;
         struct tm timeinfo;
         if (getLocalTime(&timeinfo, 10)) {
           char timeStr[9];
@@ -1057,13 +1073,13 @@ float getMaxCurrent() {
 PumpState evaluateState() {
   float maxCurrent = getMaxCurrent();
 
-  if (overcurrentProtectionEnabled && (Ia > MAX_CURRENT || Ib > MAX_CURRENT || Ic > MAX_CURRENT)) {
+  if (overcurrentProtectionEnabled && (Ia > maxCurrentThreshold || Ib > maxCurrentThreshold || Ic > maxCurrentThreshold)) {
     return FAULT;
   }
 
   #if !BENCH_TEST_MODE
-  if (dryRunProtectionEnabled && DRY_CURRENT > 0 && startCommand && state == RUNNING) {
-    if (maxCurrent < DRY_CURRENT) {
+  if (dryRunProtectionEnabled && dryCurrentThreshold > 0 && startCommand && state == RUNNING) {
+    if (maxCurrent < dryCurrentThreshold) {
       return FAULT;
     }
   }
@@ -1107,7 +1123,7 @@ void updateState() {
 
   if (targetState == FAULT) {
     float maxCurrent = getMaxCurrent();
-    if (maxCurrent > MAX_CURRENT) {
+    if (maxCurrent > maxCurrentThreshold) {
       triggerFault(OVERCURRENT);
     } else {
       triggerFault(DRY_RUN);
@@ -1633,16 +1649,20 @@ void loadProtectionConfig() {
   preferences.begin("protection", true);
   overcurrentProtectionEnabled = preferences.getBool("overcurrent", true);
   dryRunProtectionEnabled = preferences.getBool("dryrun", true);
+  maxCurrentThreshold = preferences.getFloat("max_current", 120.0);
+  dryCurrentThreshold = preferences.getFloat("dry_current", 0.5);
   preferences.end();
-  Serial.println("Protection config loaded");
+  Serial.printf("Protection config loaded: max=%.1fA, dry=%.1fA\n", maxCurrentThreshold, dryCurrentThreshold);
 }
 
 void saveProtectionConfig() {
   preferences.begin("protection", false);
   preferences.putBool("overcurrent", overcurrentProtectionEnabled);
   preferences.putBool("dryrun", dryRunProtectionEnabled);
+  preferences.putFloat("max_current", maxCurrentThreshold);
+  preferences.putFloat("dry_current", dryCurrentThreshold);
   preferences.end();
-  Serial.println("Protection config saved");
+  Serial.printf("Protection config saved: max=%.1fA, dry=%.1fA\n", maxCurrentThreshold, dryCurrentThreshold);
 }
 
 /* ================= SCHEDULE CONFIG ================= */
