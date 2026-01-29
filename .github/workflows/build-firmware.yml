@@ -27,20 +27,28 @@ jobs:
           pip install platformio
 
       - name: Create secrets.h from GitHub Secrets
+        env:
+          MQTT_HOST: ${{ secrets.MQTT_HOST }}
+          MQTT_USER: ${{ secrets.MQTT_USER }}
+          MQTT_PASS: ${{ secrets.MQTT_PASS }}
+          WEBHOOK_URL: ${{ secrets.NOTIFICATION_WEBHOOK_URL }}
+          OTA_PASS: ${{ secrets.OTA_PASSWORD }}
+          WEB_PASS: ${{ secrets.WEB_AUTH_PASS }}
+        shell: bash
         run: |
-          cat > "Main Code/FieldLink_Main_Code/src/secrets.h" << 'EOF'
-          #ifndef SECRETS_H
-          #define SECRETS_H
-          #define DEFAULT_MQTT_HOST "${{ secrets.MQTT_HOST }}"
-          #define DEFAULT_MQTT_PORT 8883
-          #define DEFAULT_MQTT_USER "${{ secrets.MQTT_USER }}"
-          #define DEFAULT_MQTT_PASS "${{ secrets.MQTT_PASS }}"
-          #define NOTIFICATION_WEBHOOK_URL "${{ secrets.NOTIFICATION_WEBHOOK_URL }}"
-          #define OTA_PASSWORD "${{ secrets.OTA_PASSWORD }}"
-          #define WEB_AUTH_USER "admin"
-          #define WEB_AUTH_PASS "${{ secrets.WEB_AUTH_PASS }}"
-          #endif
-          EOF
+          {
+            echo '#ifndef SECRETS_H'
+            echo '#define SECRETS_H'
+            printf '#define DEFAULT_MQTT_HOST "%s"\n' "$MQTT_HOST"
+            echo '#define DEFAULT_MQTT_PORT 8883'
+            printf '#define DEFAULT_MQTT_USER "%s"\n' "$MQTT_USER"
+            printf '#define DEFAULT_MQTT_PASS "%s"\n' "$MQTT_PASS"
+            printf '#define NOTIFICATION_WEBHOOK_URL "%s"\n' "$WEBHOOK_URL"
+            printf '#define OTA_PASSWORD "%s"\n' "$OTA_PASS"
+            echo '#define WEB_AUTH_USER "admin"'
+            printf '#define WEB_AUTH_PASS "%s"\n' "$WEB_PASS"
+            echo '#endif'
+          } > "Main Code/FieldLink_Main_Code/src/secrets.h"
 
       - name: Build firmware
         run: |
