@@ -29,7 +29,7 @@
 /* ================= USER CONFIG ================= */
 
 #define FW_NAME    "ESP32 Pump Controller"
-#define FW_VERSION "1.8.0"
+#define FW_VERSION "1.8.1"
 
 // Captive portal timeout (seconds) - how long to wait for user to configure WiFi
 #define PORTAL_TIMEOUT_S    180
@@ -94,8 +94,8 @@ char TOPIC_COMMAND[64] = "";
 // DO CHANNEL USED FOR CONTACTOR
 #define DO_CONTACTOR_CH  0
 
-// DO CHANNEL FOR FAULT ALARM OUTPUT
-#define DO_FAULT_CH  5
+// DO CHANNEL FOR FAULT ALARM OUTPUT (DO5 on board = channel 4 in code, 0-indexed)
+#define DO_FAULT_CH  4
 
 // Protection defaults (can be overridden via MQTT)
 #define DEFAULT_RUN_THRESHOLD  5.0
@@ -617,6 +617,20 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   else if (strcmp(cmd, "STATUS") == 0) {
     lastTelemetryTime = 0;
   }
+  else if (strcmp(cmd, "TEST_FAULT") == 0) {
+    Serial.println("TEST: Triggering manual fault");
+    triggerFault(SENSOR_FAULT);
+    Serial.printf("DO state after fault: 0x%02X\n", do_state);
+  }
+  else if (strncmp(cmd, "DO", 2) == 0 && strlen(cmd) >= 4) {
+    // Direct DO control: DO1ON, DO1OFF, DO5ON, DO5OFF, etc.
+    int ch = cmd[2] - '1';  // Convert '1'-'8' to 0-7
+    bool on = (cmd[3] == 'O' && cmd[4] == 'N');
+    if (ch >= 0 && ch < 8) {
+      setDO(ch, on);
+      Serial.printf("DO%d set to %s (channel %d, do_state=0x%02X)\n", ch+1, on?"ON":"OFF", ch, do_state);
+    }
+  }
   else if (cmd[0] == '{') {
     // JSON command
     StaticJsonDocument<256> doc;
@@ -877,12 +891,41 @@ void handleSerialConfig() {
     delay(500);
     ESP.restart();
   }
+  else if (input == "TEST_FAULT") {
+    Serial.println("Testing fault trigger...");
+    Serial.printf("do_state BEFORE: 0x%02X\n", do_state);
+    triggerFault(SENSOR_FAULT);
+    Serial.printf("do_state AFTER:  0x%02X\n", do_state);
+    Serial.printf("DO_FAULT_CH = %d, expected bit = 0x%02X\n", DO_FAULT_CH, (1 << DO_FAULT_CH));
+  }
+  else if (input == "DO5ON") {
+    Serial.println("Turning DO5 ON...");
+    setDO(4, true);  // Channel 4 = physical DO5
+    Serial.printf("do_state: 0x%02X\n", do_state);
+  }
+  else if (input == "DO5OFF") {
+    Serial.println("Turning DO5 OFF...");
+    setDO(4, false);
+    Serial.printf("do_state: 0x%02X\n", do_state);
+  }
+  else if (input.startsWith("DO") && input.length() >= 4) {
+    // DOxON or DOxOFF where x is 1-8
+    int ch = input.charAt(2) - '1';  // Convert '1'-'8' to 0-7
+    bool on = input.endsWith("ON");
+    if (ch >= 0 && ch < 8) {
+      setDO(ch, on);
+      Serial.printf("DO%d set to %s (channel %d, do_state=0x%02X)\n", ch+1, on?"ON":"OFF", ch, do_state);
+    }
+  }
   else if (input == "HELP") {
     Serial.println("\n=== SERIAL COMMANDS ===");
     Serial.println("STATUS       - Show system status");
     Serial.println("START        - Start pump");
     Serial.println("STOP         - Stop pump");
     Serial.println("FAULT_RESET  - Clear fault condition");
+    Serial.println("TEST_FAULT   - Test fault alarm output");
+    Serial.println("DO5ON/DO5OFF - Test DO5 directly");
+    Serial.println("DOxON/DOxOFF - Control any DO (x=1-8)");
     Serial.println("WIFI_RESET   - Clear WiFi and restart setup portal");
     Serial.println("REBOOT       - Restart device");
     Serial.println("FACTORY_RESET- Clear all settings");

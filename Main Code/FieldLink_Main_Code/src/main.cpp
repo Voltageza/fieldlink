@@ -36,7 +36,7 @@
 /* ================= USER CONFIG ================= */
 
 #define FW_NAME    "ESP32 Pump Controller"
-#define FW_VERSION "2.8.1"
+#define FW_VERSION "2.10.0"
 
 // BENCH TEST MODE - disable protections that require pump/load
 #define BENCH_TEST_MODE false  // Set to true for bench testing without pump
@@ -149,6 +149,19 @@ float dryCurrentThreshold = 0.5;    // Dry run detection threshold (A)
 // Protection enable flags
 bool overcurrentProtectionEnabled = true;
 bool dryRunProtectionEnabled = true;
+
+// Fault delay settings (stored in NVS)
+uint32_t overcurrentDelayMs = 0;  // 0 = immediate, range 0-30000
+uint32_t dryrunDelayMs = 0;
+
+// Fault delay timers
+unsigned long overcurrentStartTime = 0;
+bool overcurrentConditionActive = false;
+unsigned long dryrunStartTime = 0;
+bool dryrunConditionActive = false;
+
+// Contactor feedback (DI4 monitors aux contact)
+bool contactorConfirmed = false;
 
 // Schedule settings
 bool scheduleEnabled = false;
@@ -827,6 +840,18 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
         saveProtectionConfig();
         Serial.printf("Thresholds updated: max=%.1fA, dry=%.1fA\n", maxCurrentThreshold, dryCurrentThreshold);
       }
+      else if (command && strcmp(command, "SET_DELAYS") == 0) {
+        if (doc.containsKey("overcurrent_delay_ms")) {
+          uint32_t val = doc["overcurrent_delay_ms"];
+          if (val <= 30000) overcurrentDelayMs = val;
+        }
+        if (doc.containsKey("dryrun_delay_ms")) {
+          uint32_t val = doc["dryrun_delay_ms"];
+          if (val <= 30000) dryrunDelayMs = val;
+        }
+        saveProtectionConfig();
+        Serial.printf("Delays updated: overcurrent=%lums, dryrun=%lums\n", overcurrentDelayMs, dryrunDelayMs);
+      }
       else if (command && strcmp(command, "SET_SCHEDULE") == 0) {
         if (doc.containsKey("enabled"))
           scheduleEnabled = doc["enabled"];
@@ -869,6 +894,8 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
         resp["dryrun_protection"] = dryRunProtectionEnabled;
         resp["max_current"] = maxCurrentThreshold;
         resp["dry_current"] = dryCurrentThreshold;
+        resp["overcurrent_delay_ms"] = overcurrentDelayMs;
+        resp["dryrun_delay_ms"] = dryrunDelayMs;
         struct tm timeinfo;
         if (getLocalTime(&timeinfo, 10)) {
           char timeStr[9];
@@ -1072,16 +1099,50 @@ float getMaxCurrent() {
 
 PumpState evaluateState() {
   float maxCurrent = getMaxCurrent();
+  unsigned long now = millis();
 
+  // Overcurrent detection with configurable delay
   if (overcurrentProtectionEnabled && (Ia > maxCurrentThreshold || Ib > maxCurrentThreshold || Ic > maxCurrentThreshold)) {
-    return FAULT;
+    if (!overcurrentConditionActive) {
+      overcurrentConditionActive = true;
+      overcurrentStartTime = now;
+      Serial.printf("Overcurrent condition started (delay=%lums)\n", overcurrentDelayMs);
+    }
+    // Check if delay has elapsed
+    if (overcurrentDelayMs == 0 || (now - overcurrentStartTime) >= overcurrentDelayMs) {
+      return FAULT;
+    }
+  } else {
+    // Condition cleared before delay elapsed
+    if (overcurrentConditionActive) {
+      Serial.println("Overcurrent condition cleared");
+      overcurrentConditionActive = false;
+    }
   }
 
   #if !BENCH_TEST_MODE
+  // Dry run detection with configurable delay
   if (dryRunProtectionEnabled && dryCurrentThreshold > 0 && startCommand && state == RUNNING) {
     if (maxCurrent < dryCurrentThreshold) {
-      return FAULT;
+      if (!dryrunConditionActive) {
+        dryrunConditionActive = true;
+        dryrunStartTime = now;
+        Serial.printf("Dry run condition started (delay=%lums)\n", dryrunDelayMs);
+      }
+      // Check if delay has elapsed
+      if (dryrunDelayMs == 0 || (now - dryrunStartTime) >= dryrunDelayMs) {
+        return FAULT;
+      }
+    } else {
+      // Condition cleared before delay elapsed
+      if (dryrunConditionActive) {
+        Serial.println("Dry run condition cleared");
+        dryrunConditionActive = false;
+      }
     }
+  } else {
+    // Reset dry run condition when not in running state or protection disabled
+    dryrunConditionActive = false;
   }
 
   if (START_TIMEOUT > 0 && startCommand && state != RUNNING) {
@@ -1651,8 +1712,11 @@ void loadProtectionConfig() {
   dryRunProtectionEnabled = preferences.getBool("dryrun", true);
   maxCurrentThreshold = preferences.getFloat("max_current", 120.0);
   dryCurrentThreshold = preferences.getFloat("dry_current", 0.5);
+  overcurrentDelayMs = preferences.getULong("oc_delay", 0);
+  dryrunDelayMs = preferences.getULong("dr_delay", 0);
   preferences.end();
-  Serial.printf("Protection config loaded: max=%.1fA, dry=%.1fA\n", maxCurrentThreshold, dryCurrentThreshold);
+  Serial.printf("Protection config loaded: max=%.1fA, dry=%.1fA, oc_delay=%lums, dr_delay=%lums\n",
+                maxCurrentThreshold, dryCurrentThreshold, overcurrentDelayMs, dryrunDelayMs);
 }
 
 void saveProtectionConfig() {
@@ -1661,8 +1725,11 @@ void saveProtectionConfig() {
   preferences.putBool("dryrun", dryRunProtectionEnabled);
   preferences.putFloat("max_current", maxCurrentThreshold);
   preferences.putFloat("dry_current", dryCurrentThreshold);
+  preferences.putULong("oc_delay", overcurrentDelayMs);
+  preferences.putULong("dr_delay", dryrunDelayMs);
   preferences.end();
-  Serial.printf("Protection config saved: max=%.1fA, dry=%.1fA\n", maxCurrentThreshold, dryCurrentThreshold);
+  Serial.printf("Protection config saved: max=%.1fA, dry=%.1fA, oc_delay=%lums, dr_delay=%lums\n",
+                maxCurrentThreshold, dryCurrentThreshold, overcurrentDelayMs, dryrunDelayMs);
 }
 
 /* ================= SCHEDULE CONFIG ================= */
@@ -2540,6 +2607,12 @@ void loop() {
   if (!digitalRead(DI7_PIN)) diStatus |= 0x40;  // DI7 active (inverted)
   if (!digitalRead(DI8_PIN)) diStatus |= 0x80;  // DI8 active (inverted)
 
+  // ===== CONTACTOR FEEDBACK (DI4) =====
+  // DI4 = bit 3 (0x08), active when contactor aux contact closed
+  bool di4Active = (diStatus & 0x08) != 0;
+  bool contactorOn = (do_state & (1 << DO_CONTACTOR_CH)) == 0;  // Active low
+  contactorConfirmed = contactorOn && di4Active;
+
   // ===== LOCAL/REMOTE MODE (DI3) =====
   // LOW (active) = LOCAL mode, HIGH (inactive) = REMOTE mode
   remoteMode = digitalRead(DI3_PIN);  // HIGH = remote, LOW = local
@@ -2649,6 +2722,7 @@ void loop() {
       }
 
       doc["sensor"] = sensorOnline;
+      doc["contactor_confirmed"] = contactorConfirmed;
       doc["uptime"] = now / 1000;
       doc["mode"] = remoteMode ? "REMOTE" : "LOCAL";
       doc["network"] = useEthernet ? "ETH" : "WiFi";
