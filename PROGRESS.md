@@ -173,6 +173,74 @@ UPDATE portal_settings SET admin_password = 'newpassword' WHERE id = 1;
 
 ---
 
+## Future Consideration: Azure Hosting (100+ Devices)
+
+**Date:** 2026-02-03
+
+For scaling to 100+ devices, Azure VM + PostgreSQL is the recommended approach.
+
+### Recommended Azure Architecture
+
+```
+100 ESP32 Devices
+       │
+       ▼ (MQTT - unchanged)
+┌──────────────────┐
+│ Azure VM (B1s)   │  $8/month
+│ - EMQX Broker    │
+│ - Nginx (portal) │
+└────────┬─────────┘
+         │
+         ▼
+┌──────────────────┐
+│ PostgreSQL       │  $15/month
+│ Flexible Server  │
+└──────────────────┘
+┌──────────────────┐
+│ Blob Storage     │  $1/month
+│ (Firmware OTA)   │
+└──────────────────┘
+
+Total: ~$25/month for 100 devices
+```
+
+### Why Not Azure IoT Hub?
+
+| Telemetry Rate | Messages/Day (100 devices) | IoT Hub Tier | Cost |
+|----------------|---------------------------|--------------|------|
+| 1 msg / 2 sec (current) | 4,320,000 | S2 | $250/mo |
+| 1 msg / 30 sec | 288,000 | S1 | $25/mo |
+
+Current firmware sends every 2 seconds - too expensive for IoT Hub pricing.
+Self-hosted EMQX on Azure VM avoids per-message costs.
+
+### Migration Path
+
+1. Spin up Azure VM (B1s - $8/mo)
+2. Install EMQX (open source MQTT broker)
+3. Install Nginx for portal hosting
+4. Create PostgreSQL Flexible Server ($15/mo)
+5. Create Blob Storage container for firmware
+6. Update firmware `secrets.h` with new MQTT host
+7. Migrate Supabase data to PostgreSQL
+8. Update portal config to new endpoints
+
+**Estimated migration effort:** 4-8 hours
+**No firmware logic changes needed** - same MQTT protocol
+
+### Cost Comparison at Scale
+
+| Devices | Current Stack | Azure (VM + PostgreSQL) |
+|---------|---------------|------------------------|
+| 50 | $0-25 | $25 |
+| 100 | $25-40 | $25 |
+| 200 | $40+ | $25-35 |
+| 500 | Custom pricing | $35-50 |
+
+Azure becomes more cost-effective at higher device counts.
+
+---
+
 ## Future Consideration: Arduino Opta
 
 **Date:** 2026-01-30
