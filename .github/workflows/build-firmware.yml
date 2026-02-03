@@ -89,17 +89,29 @@ jobs:
           FIRMWARE_FILE="firmware_v${{ steps.version.outputs.version }}.bin"
           STORAGE_PATH="firmware-releases/PUMP_ESP32S3/v${{ steps.version.outputs.version }}.bin"
 
-          echo "Uploading $FIRMWARE_FILE to Supabase Storage..."
+          # Remove trailing slash from URL if present
+          SUPABASE_URL="${SUPABASE_URL%/}"
+
+          UPLOAD_URL="${SUPABASE_URL}/storage/v1/object/${STORAGE_PATH}"
+
+          echo "Firmware file: $FIRMWARE_FILE"
+          echo "Upload URL: $UPLOAD_URL"
+          echo "File size: $(stat --printf='%s' "$FIRMWARE_FILE") bytes"
+          echo ""
+          echo "Uploading to Supabase Storage..."
 
           HTTP_STATUS=$(curl -s -w "%{http_code}" -o /tmp/upload_response.txt \
-            -X POST "${SUPABASE_URL}/storage/v1/object/${STORAGE_PATH}" \
+            -X POST "$UPLOAD_URL" \
             -H "Authorization: Bearer ${SUPABASE_SERVICE_KEY}" \
             -H "Content-Type: application/octet-stream" \
             -H "x-upsert: true" \
             --data-binary @"${FIRMWARE_FILE}")
 
+          echo ""
           echo "HTTP Status: $HTTP_STATUS"
+          echo "Response:"
           cat /tmp/upload_response.txt
+          echo ""
 
           if [ "$HTTP_STATUS" -ge 200 ] && [ "$HTTP_STATUS" -lt 300 ]; then
             echo ""
