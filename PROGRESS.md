@@ -27,10 +27,10 @@
 
 ## In Progress
 
-### Supabase Storage for OTA - CONFIGURED ✅
+### Supabase Storage for OTA - COMPLETE ✅
 **Date:** 2026-02-03
 
-GitHub Actions workflow updated to upload firmware to Supabase Storage after build.
+GitHub Actions workflow uploads firmware to Supabase Storage after build. OTA tested and working!
 
 **Bucket:** `firmware-releases` (PUBLIC)
 **Path:** `firmware-releases/PUMP_ESP32S3/v{version}.bin`
@@ -47,9 +47,10 @@ https://einfhsixzxfnbppzydcn.supabase.co/storage/v1/object/public/firmware-relea
 **Status:**
 - [x] Supabase Storage bucket exists (`firmware-releases`)
 - [x] GitHub Actions workflow updated
-- [ ] Add GitHub Secrets (SUPABASE_URL, SUPABASE_SERVICE_KEY)
-- [ ] Trigger test build to verify upload works
-- [ ] Test OTA with Supabase URL on device
+- [x] GitHub Secrets added (SUPABASE_URL, SUPABASE_SERVICE_KEY)
+- [x] CI/CD build uploads to Supabase successfully
+- [x] OTA tested on device - WORKS!
+- [x] Device linked to hardware type (FL-22F968 → PUMP_ESP32S3)
 
 ---
 
@@ -90,11 +91,11 @@ Complete documentation of the FieldLink hosting and infrastructure:
 
 ## Not Started
 
-### OTA Improvements
+### OTA Improvements - COMPLETE ✅
 - [x] Investigate why GitHub URLs fail (SSL/redirect issue) - GitHub CDN redirects + complex SSL chain
 - [x] Configure Supabase Storage for firmware hosting
-- [ ] Test OTA with Supabase-hosted firmware URL (pending secrets setup)
-- [ ] Fix device hardware type in portal for push updates
+- [x] Test OTA with Supabase-hosted firmware URL - WORKS!
+- [x] Fix device hardware type in portal for push updates (linked FL-22F968 to PUMP_ESP32S3)
 
 ---
 

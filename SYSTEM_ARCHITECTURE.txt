@@ -34,7 +34,7 @@ Database            Supabase            Users, devices, settings, firmware
 Authentication      Supabase Auth       User login (email/password)
 Telegram Bot        Deno Deploy         Fault notifications
 Firmware Builds     GitHub Actions      CI/CD builds firmware on push
-Firmware Binaries   GitHub Releases     Hosts .bin files for OTA
+Firmware Binaries   Supabase Storage    Hosts .bin files for OTA (direct URLs, no redirects)
 
 ================================================================================
                               DATA FLOWS
@@ -202,10 +202,11 @@ AUTHORIZATION:
                            KNOWN ISSUES
 ================================================================================
 
-1. OTA VIA GITHUB URLS FAILS
+1. OTA VIA GITHUB URLS FAILS - RESOLVED
    - ESP32 cannot handle GitHub CDN redirects and SSL certificate chain
-   - Workaround: Flash via USB using PlatformIO (pio run -t upload)
-   - Potential fix: Host firmware on simpler server (Hostinger, Supabase Storage)
+   - SOLUTION: Firmware now hosted on Supabase Storage (direct URLs, no redirects)
+   - CI/CD auto-uploads to: firmware-releases/PUMP_ESP32S3/v{version}.bin
+   - OTA tested and working as of 2026-02-03
 
 2. GITHUB ACTIONS RELEASE CREATION
    - Sometimes returns 403 error
@@ -246,5 +247,9 @@ Change admin password (SQL):
 Created: 2026-02-03
 Last Updated: 2026-02-03
 Author: Generated with Claude Code
+
+Changelog:
+- 2026-02-03: Initial documentation
+- 2026-02-03: OTA via Supabase Storage confirmed working
 
 ================================================================================
