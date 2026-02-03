@@ -1,0 +1,250 @@
+================================================================================
+                         FIELDLINK SYSTEM ARCHITECTURE
+================================================================================
+
+OVERVIEW
+--------
+FieldLink is an ESP32-based IoT pump controller system with cloud connectivity,
+a web portal, and mobile notifications.
+
+================================================================================
+                              SYSTEM DIAGRAM
+================================================================================
+
+    ESP32 Device          HiveMQ Cloud           GitHub Pages
+    (Firmware)            (MQTT Broker)          (Portal)
+        |                      |                      |
+    Modbus Sensors    <-- TLS/WSS 8884 -->    fieldlogic.co.za
+                                                      |
+                               +--------------+-------+
+                               |                      |
+                          Supabase                Deno Deploy
+                          (Database)              (Telegram Bot)
+
+================================================================================
+                            HOSTING BREAKDOWN
+================================================================================
+
+COMPONENT           PROVIDER            PURPOSE
+---------------------------------------------------------------------------
+Web Portal          GitHub Pages        Hosts SPA at fieldlogic.co.za
+DNS                 Xneelo              Points domain to GitHub Pages
+MQTT Broker         HiveMQ Cloud        Real-time device <-> portal comms
+Database            Supabase            Users, devices, settings, firmware
+Authentication      Supabase Auth       User login (email/password)
+Telegram Bot        Deno Deploy         Fault notifications
+Firmware Builds     GitHub Actions      CI/CD builds firmware on push
+Firmware Binaries   GitHub Releases     Hosts .bin files for OTA
+
+================================================================================
+                              DATA FLOWS
+================================================================================
+
+TELEMETRY (every 2 seconds):
+  ESP32 --> (TLS 8883) --> HiveMQ --> (WSS 8884) --> Browser Portal
+
+  Telemetry JSON includes:
+  - Ia, Ib, Ic (phase currents from Modbus)
+  - state (STOPPED/RUNNING/FAULT)
+  - mode (LOCAL/REMOTE)
+  - firmware_version
+  - uptime
+  - contactor_confirmed (DI4 feedback)
+
+COMMANDS (START/STOP/RESET/etc):
+  Portal UI --> HiveMQ --> ESP32 --> Activates relays
+
+  Supported commands:
+  - START, STOP, RESET (plain text)
+  - SET_DELAYS (JSON with overcurrentDelayS, dryrunDelayS)
+  - SET_THRESHOLDS (JSON with maxCurrent, etc)
+  - SET_SCHEDULE (JSON with schedule config)
+  - UPDATE_FIRMWARE (JSON with url)
+  - GET_SETTINGS (returns current config)
+
+FAULT NOTIFICATIONS:
+  ESP32 FAULT --> Portal detects --> HTTP POST --> Deno Bot --> Telegram
+
+USER AUTHENTICATION:
+  Portal --> Supabase Auth --> JWT token --> Access devices
+
+================================================================================
+                         SERVICE ENDPOINTS
+================================================================================
+
+SERVICE             ENDPOINT
+---------------------------------------------------------------------------
+HiveMQ MQTT         a5c598acdbdc4abba053799bcefb73d0.s1.eu.hivemq.cloud
+  - TLS Port:       8883 (for ESP32)
+  - WSS Port:       8884 (for browser)
+
+Supabase            einfhsixzxfnbppzydcn.supabase.co
+  - Database:       PostgreSQL
+  - Auth:           Email/password with JWT
+
+Deno Bot            fast-fox-18.voltageza.deno.net/notify
+  - Purpose:        Relay fault alerts to Telegram
+
+Portal              fieldlogic.co.za
+  - Hosted on:      GitHub Pages
+  - DNS via:        Xneelo
+
+================================================================================
+                           GIT REPOSITORIES
+================================================================================
+
+1. Voltageza/fieldlink
+   - Contains: Firmware code (main.cpp)
+   - CI/CD: GitHub Actions builds firmware on push/tag
+   - Releases: Firmware binaries hosted in GitHub Releases
+
+2. Voltageza/fieldlogic-portal
+   - Contains: Web portal (index.html, config.js, SQL schemas)
+   - Deployment: Push to main triggers GitHub Pages deploy
+   - Note: Gitignored in main FieldLink repo (separate repo)
+
+================================================================================
+                         DATABASE SCHEMA (SUPABASE)
+================================================================================
+
+TABLE               PURPOSE
+---------------------------------------------------------------------------
+auth.users          Supabase built-in auth system
+devices             Device-to-user mapping (device_id, user_id, name)
+user_profiles       User metadata (is_admin, telegram_chat_id)
+portal_settings     Global admin settings (admin_password)
+telegram_link_codes Temporary codes for Telegram account linking
+notifications       Notification audit log
+hardware_types      Device types catalog (PUMP_ESP32S3, etc)
+firmware_releases   Available firmware versions + URLs
+firmware_updates    OTA update tracking (status, progress)
+
+Security:
+- Row Level Security (RLS) enabled on all tables
+- Users can only see their own devices
+- Admins (is_admin=true) can see all devices
+
+================================================================================
+                              FIRMWARE DETAILS
+================================================================================
+
+Location:       Main Code/FieldLink_Main_Code/src/main.cpp
+Version:        2.10.0
+Hardware:       Waveshare ESP32-S3-POE-ETH-8DI-8DO
+
+Connections:
+- WiFi (primary) or Ethernet W5500 (fallback)
+- MQTT over TLS to HiveMQ Cloud
+- Modbus RS485 to current sensors (9600 baud)
+- Local web server on port 80 (basic auth)
+
+MQTT Topics:
+- Publish:    fieldlink/{DEVICE_ID}/telemetry
+- Subscribe:  fieldlink/{DEVICE_ID}/command
+- LWT:        fieldlink/{DEVICE_ID}/lwt (online/offline status)
+
+Credentials (from secrets.h, generated by GitHub Actions):
+- MQTT_HOST, MQTT_USER, MQTT_PASS
+- OTA_PASSWORD
+- WEB_AUTH_USER, WEB_AUTH_PASS
+- NOTIFICATION_WEBHOOK_URL
+
+================================================================================
+                           CI/CD PIPELINE
+================================================================================
+
+Workflow: .github/workflows/build-firmware.yml
+
+Trigger: Push to Main Code/FieldLink_Main_Code/** or manual dispatch
+
+Steps:
+1. Checkout code
+2. Setup Python 3.11 + PlatformIO
+3. Generate secrets.h from GitHub Secrets
+4. Build firmware with PlatformIO
+5. Extract version from main.cpp (#define FW_VERSION)
+6. Rename binary to firmware_v{VERSION}.bin
+7. Upload as GitHub Actions artifact
+8. Create GitHub Release with firmware binary
+
+GitHub Secrets Required:
+- MQTT_HOST
+- MQTT_USER
+- MQTT_PASS
+- OTA_PASSWORD
+- WEB_AUTH_PASS
+- NOTIFICATION_WEBHOOK_URL (optional)
+
+================================================================================
+                         SECURITY ARCHITECTURE
+================================================================================
+
+ENCRYPTION IN TRANSIT:
+- ESP32 to HiveMQ: TLS 1.2+ (port 8883)
+- Browser to HiveMQ: WSS (port 8884)
+- Portal to Supabase: HTTPS
+- Portal to Telegram Bot: HTTPS
+
+AUTHENTICATION:
+- Portal users: Supabase email/password
+- Firmware MQTT: Username/password in secrets.h
+- OTA updates: Optional ArduinoOTA password
+- Local web UI: HTTP basic auth
+- Telegram: Per-user 8-character linking codes
+
+AUTHORIZATION:
+- Row Level Security isolates user data
+- Users only see their own devices
+- Admin flag grants full access
+- Threshold/delay changes require admin password
+
+================================================================================
+                           KNOWN ISSUES
+================================================================================
+
+1. OTA VIA GITHUB URLS FAILS
+   - ESP32 cannot handle GitHub CDN redirects and SSL certificate chain
+   - Workaround: Flash via USB using PlatformIO (pio run -t upload)
+   - Potential fix: Host firmware on simpler server (Hostinger, Supabase Storage)
+
+2. GITHUB ACTIONS RELEASE CREATION
+   - Sometimes returns 403 error
+   - Check: Repository Settings > Actions > Workflow permissions
+   - Ensure "Read and write permissions" is enabled
+
+================================================================================
+                          QUICK COMMANDS
+================================================================================
+
+Test MQTT connectivity:
+  python mqtt_check.py
+
+Build and flash firmware locally:
+  cd "Main Code/FieldLink_Main_Code"
+  pio run -t upload
+
+Monitor serial output:
+  pio device monitor
+
+Trigger GitHub Actions build:
+  GitHub > Actions > Build Firmware > Run workflow
+
+Check device firmware version:
+  Look at telemetry in portal (firmware_version field)
+
+Send OTA update via MQTT:
+  Topic: fieldlink/{DEVICE_ID}/command
+  Payload: {"command": "UPDATE_FIRMWARE", "url": "{FIRMWARE_URL}"}
+
+Change admin password (SQL):
+  UPDATE portal_settings SET admin_password = 'newpassword' WHERE id = 1;
+
+================================================================================
+                         DOCUMENT INFO
+================================================================================
+
+Created: 2026-02-03
+Last Updated: 2026-02-03
+Author: Generated with Claude Code
+
+================================================================================

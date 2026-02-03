@@ -81,6 +81,36 @@ jobs:
           path: firmware_v${{ steps.version.outputs.version }}.bin
           retention-days: 90
 
+      - name: Upload to Supabase Storage
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: |
+          FIRMWARE_FILE="firmware_v${{ steps.version.outputs.version }}.bin"
+          STORAGE_PATH="firmware-releases/PUMP_ESP32S3/v${{ steps.version.outputs.version }}.bin"
+
+          echo "Uploading $FIRMWARE_FILE to Supabase Storage..."
+
+          HTTP_STATUS=$(curl -s -w "%{http_code}" -o /tmp/upload_response.txt \
+            -X POST "${SUPABASE_URL}/storage/v1/object/${STORAGE_PATH}" \
+            -H "Authorization: Bearer ${SUPABASE_SERVICE_KEY}" \
+            -H "Content-Type: application/octet-stream" \
+            -H "x-upsert: true" \
+            --data-binary @"${FIRMWARE_FILE}")
+
+          echo "HTTP Status: $HTTP_STATUS"
+          cat /tmp/upload_response.txt
+
+          if [ "$HTTP_STATUS" -ge 200 ] && [ "$HTTP_STATUS" -lt 300 ]; then
+            echo ""
+            echo "✅ Firmware uploaded successfully!"
+            echo "📥 OTA URL: ${SUPABASE_URL}/storage/v1/object/public/${STORAGE_PATH}"
+          else
+            echo ""
+            echo "❌ Upload failed with status $HTTP_STATUS"
+            exit 1
+          fi
+
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
@@ -89,8 +119,13 @@ jobs:
           body: |
             Automated firmware build from commit ${{ github.sha }}
 
-            ## Installation
-            Download `firmware_v${{ steps.version.outputs.version }}.bin` and flash via OTA or USB.
+            ## OTA Update (recommended)
+            ```
+            ${{ secrets.SUPABASE_URL }}/storage/v1/object/public/firmware-releases/PUMP_ESP32S3/v${{ steps.version.outputs.version }}.bin
+            ```
+
+            ## Manual Installation
+            Download `firmware_v${{ steps.version.outputs.version }}.bin` and flash via USB.
           files: firmware_v${{ steps.version.outputs.version }}.bin
           draft: false
           prerelease: false
