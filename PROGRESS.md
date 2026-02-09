@@ -16,7 +16,10 @@
 - [x] Startup animation (4-step sequence)
 - [x] saveDelays() function sends SET_DELAYS command
 - [x] Admin password protection for Threshold & Fault Delay settings
+- [x] Admin password protection for Protection toggle settings
 - [x] Admin password change UI (Settings page, admin-only)
+- [x] Contactor badge uses actual DO state instead of cmd flag
+- [x] Startup animation uses DO state with 5s grace period for stale telemetry
 
 ### Infrastructure
 - [x] GitHub Actions workflow created (.github/workflows/build-firmware.yml)
@@ -65,9 +68,9 @@ https://einfhsixzxfnbppzydcn.supabase.co/storage/v1/object/public/firmware-relea
 ### Testing v2.10.0 Features
 - [x] Verify device comes back online with v2.10.0 ✅
 - [x] Test contactor feedback (DI4) works ✅ (`contactor_confirmed` in telemetry)
-- [ ] Test contactor badge shows in portal (CONFIRMED/PENDING/OFF)
+- [x] Test contactor badge shows in portal (CONFIRMED/PENDING/OFF) ✅ Fixed to use DO state
+- [x] Test startup animation progression ✅ Fixed race condition with 5s grace period
 - [ ] Test fault delays work correctly (set delay, trigger fault)
-- [ ] Test startup animation progression
 - [ ] Test delays persist after reboot
 - [ ] Update local secrets.h with new MQTT password
 
@@ -134,17 +137,15 @@ Firmware v2.10.0 is now running. Continue testing:
    - Trigger overcurrent or dryrun condition
    - Verify fault doesn't trip until delay expires
 
-2. **Test contactor badge in portal:**
-   - Start pump, verify badge shows CONFIRMED (green)
-   - Stop pump, verify badge shows OFF
-
-3. **Test startup animation:**
-   - Refresh portal page, watch for 4-step animation
-
-4. **Test delay persistence:**
+2. **Test delay persistence:**
    - Set delays, reboot device, verify delays retained
 
-5. **MQTT check script:**
+3. **Test on live pump:**
+   - Contactor badge: START → PENDING (cyan) → CONFIRMED (green, if DI4 wired) → OFF on STOP
+   - Startup animation: should progress through all 4 steps on real pump start
+   - Note: Bench test triggers start failure timeout after 10s (no current detected). Set `BENCH_TEST_MODE = true` in main.cpp to disable for bench testing.
+
+4. **MQTT check script:**
    ```bash
    python "Fieldlink/mqtt_check.py"
    ```
@@ -170,6 +171,35 @@ Payload:
 ```sql
 UPDATE portal_settings SET admin_password = 'newpassword' WHERE id = 1;
 ```
+
+---
+
+## Session Log: 2026-02-09
+
+### Portal Bug Fixes & Improvements (fieldlogic-portal)
+
+**Commits pushed to `Voltageza/fieldlogic-portal`:**
+
+1. `9f516e6` - **fix: Contactor badge uses actual DO state**
+   - Badge was tracking `data.cmd` (software flag) which goes false on fault timeout
+   - Now reads DO1 bit from telemetry `do_state` field (bit 0, active-low)
+
+2. `6ff68b8` - **fix: Startup animation uses DO state**
+   - Same issue as contactor badge — animation steps used `data.cmd`
+   - Updated to use actual DO output state
+
+3. `b46cd08` - **fix: 5s grace period on startup animation**
+   - Race condition: stale telemetry (sent before device processed START) was hiding animation
+   - Added `startupAnimationTime` with 5-second grace period before allowing hide
+
+4. `6b1688f` - **feat: Admin password on protection toggles** (superseded)
+
+5. `353671d` - **fix: Protection settings use Save button pattern**
+   - Overcurrent/Dry Run protection toggles now have a "Save Protection" button
+   - Requires admin password, matching the threshold and delay settings pattern
+   - Shows success/error status message after save
+
+**Key lesson:** Portal UI elements tracking `data.cmd` are unreliable because `startCommand` gets cleared by firmware fault timeouts. Use `data.do` (actual hardware DO state) for accurate representation.
 
 ---
 
