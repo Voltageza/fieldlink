@@ -203,6 +203,25 @@ UPDATE portal_settings SET admin_password = 'newpassword' WHERE id = 1;
 
 ---
 
+## Session Log: 2026-02-10
+
+### Hardware Platform Research
+
+1. **Arduino Opta full assessment** — Researched stock availability (in stock at RS Components SA), durability (documented crash-after-months issues), and software maturity (PLC IDE unstable, Mbed OS EOL July 2026). **Verdict: Not recommended** for FieldLink pump control. Revisit late 2026 after Zephyr transition stabilizes.
+
+2. **South Africa hardware sourcing** — Waveshare ESP32-S3 boards are hard to source locally. Researched all options:
+   - Local (expensive): Industrial Shields ESP32 PLC (~R8,800 at RS Components), Controllino MEGA (~R9,456 at Communica)
+   - Import (best value): Waveshare boards from AliExpress ~R750-R1,050 each
+   - Local reseller: Micro Robotics (Pretoria) stocks some Waveshare ESP32 boards
+   - **Recommendation:** Bulk order 3-5 Waveshare boards from AliExpress for spares
+
+3. **Identified relay variant** — Waveshare ESP32-S3-ETH-8DI-8RO has built-in 10A relays instead of Darlington outputs. Same ESP32-S3/W5500 platform, minor pin remap needed. Worth considering for future builds.
+
+**Commits:**
+- `311f79a` - docs: Add Arduino Opta assessment and SA hardware sourcing notes
+
+---
+
 ## Future Consideration: Azure Hosting (100+ Devices)
 
 **Date:** 2026-02-03
