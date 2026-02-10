@@ -271,50 +271,104 @@ Azure becomes more cost-effective at higher device counts.
 
 ---
 
-## Future Consideration: Arduino Opta
+## Future Consideration: Arduino Opta — NOT RECOMMENDED (for now)
 
-**Date:** 2026-01-30
+**Initial evaluation:** 2026-01-30
+**Full assessment:** 2026-02-10
+**Verdict:** Not recommended for FieldLink pump control. Revisit late 2026.
 
-Exploring Arduino Opta as an alternative platform for future projects. Benefits: industrial-grade, DIN-rail mount, IP20 rated, long-term Arduino support.
+### Assessment Summary
 
-### Opta Models
-| Model | Connectivity | Price |
-|-------|--------------|-------|
-| Opta Lite | Ethernet only | ~$90 |
-| Opta RS485 | Ethernet + RS485 | ~$110 |
-| Opta WiFi | Ethernet + WiFi + BLE + RS485 | ~$140 |
+Explored Arduino Opta as an alternative industrial platform. After thorough research into stock availability, durability, and software maturity, the conclusion is to **stick with ESP32-S3** for now.
 
-**Recommended:** Opta WiFi or Opta RS485 (Modbus support needed)
+### Stock Availability — Good
+- All 3 variants **in stock at RS Components South Africa**:
+  - Opta Lite: R2,742.71 (excl. VAT)
+  - Opta RS485: R3,003.79
+  - Opta WiFi: R3,609.17
+- Also available at Mouser, DigiKey, Arduino Store internationally
+- No supply chain or lead time issues
 
-### Migration Compatibility
-| Component | Effort |
-|-----------|--------|
-| Core logic (state machine, faults) | ✅ Direct transfer |
-| ArduinoJson, PubSubClient, ModbusMaster | ✅ Compatible |
-| Digital Inputs (8) | ✅ Built-in |
-| Digital Outputs | ⚠️ Only 4 relays (need expansion for more) |
-| ESPAsyncWebServer | ❌ Rewrite needed |
-| WiFiManager | ❌ Rewrite needed |
-| TLS/SSL | ⚠️ Different library |
-| OTA Updates | ⚠️ Different mechanism |
-| NVS/Preferences | ⚠️ Use EEPROM/SD instead |
+### Durability — Adequate but concerns
+- IP20 (indoor panel-mount only, same as most DIN-rail PLCs)
+- CE and cULus certified, -20°C to +50°C, DIN rail mount
+- 87-year MTBF claimed, **BUT:**
+- **Documented crashes after months of continuous operation** — users running Modbus TCP polling report complete lockups every ~4 months. Suspected memory leak, no fix from Arduino
+- Network issues can block local process execution — dangerous for pump control
 
-**Estimated migration effort:** ~40% code changes
+### Software Development — Dealbreaker issues
 
-### Future-Proofing Suggestion
-Consider adding hardware abstraction layer to current codebase:
-```cpp
-// hardware.h - abstract interface
-class IHardware {
-  virtual void setOutput(uint8_t channel, bool state) = 0;
-  virtual bool getInput(uint8_t channel) = 0;
-};
-// Implement: hardware_esp32.cpp, hardware_opta.cpp
-```
+1. **PLC IDE is not production-ready** — constant crashes, connection failures, upload anomalies confirmed across 5-7 devices. Systemic issue, not isolated hardware defects
+2. **Mbed OS end-of-life July 2026** — Arduino transitioning to Zephyr RTOS, but replacement core still in beta (v0.3.2 as of Aug 2025). Deploying mid-RTOS transition is risky
+3. **Arduino C++ is the only viable programming option** — which we can already do on ESP32-S3 with a more mature ecosystem
 
-### Expansion Options
-- **Opta Ext D1608E** - 16 DI + 8 DO (daisy-chain up to 5)
+### Why not for FieldLink
+- Gives up a working ESP32-S3 platform for: a nicer enclosure and 4 built-in relays
+- Takes on: Mbed EOL risk, documented crash issues, fewer I/O points (4 DO vs our 8)
+- ~40% code migration effort for arguably a worse outcome
+
+### Better Alternatives
+
+| Platform | Why |
+|----------|-----|
+| **Industrial Shields ESP32 PLC** | Same ESP32 chip family, DIN-rail, industrial I/O protection, PlatformIO, code ports almost directly. ~$150-500 |
+| **Current Waveshare + proper enclosure** | Cheapest path. Buy DIN-rail enclosure + terminal blocks for a proven working system |
+| **Siemens S7-1200** | If a client demands "real PLC" credentials. Overkill but bulletproof |
+
+### Recommendation
+**Stick with ESP32-S3.** If industrial credibility is needed, look at Industrial Shields ESP32 PLC — same chip, minimal code changes, proper industrial housing without Opta's software risks. Revisit Opta in late 2026 after Zephyr transition is complete and stability is proven.
 
 ### Links
 - Product page: https://www.arduino.cc/pro/hardware-arduino-opta/
-- PlatformIO supports Opta (Arduino Mbed OS core)
+- Arduino Forum - crash reports: https://forum.arduino.cc/t/arduino-opta-crashes-after-a-few-months/1413454
+- Mbed EOL announcement: https://os.mbed.com/blog/entry/Important-Update-on-Mbed/
+- Zephyr transition: https://blog.arduino.cc/2024/07/24/the-end-of-mbed-marks-a-new-beginning-for-arduino/
+- Industrial Shields ESP32 PLC: https://www.industrialshields.com/industrial-esp32-plc-products-family-ideal-for-iot-solutions
+
+---
+
+## Hardware Sourcing — South Africa
+
+**Date:** 2026-02-10
+**Problem:** Waveshare ESP32-S3-POE-ETH-8DI-8DO is hard to source locally in SA.
+
+### Locally in stock (expensive)
+
+| Board | Supplier | Price (inc VAT) | Notes |
+|-------|----------|-----------------|-------|
+| Industrial Shields ESP32 PLC 21 | RS Components SA | ~R8,800 | ESP32, 13 DI / 8 DO, RS485, Ethernet, DIN rail. 5 in stock |
+| Controllino MEGA | Communica (Centurion) | R9,456 | ATmega2560 — NOT ESP32, firmware rewrite needed. Not recommended |
+
+### Import from AliExpress / Waveshare direct (best value)
+
+| Board | Price (USD) | Shipping | Total (ZAR est.) | Firmware impact |
+|-------|-------------|----------|-------------------|-----------------|
+| **ESP32-S3-POE-ETH-8DI-8DO** (current board) | ~$32 | $8-12, 15-40 days | ~R750-R900 | None — exact same board |
+| **ESP32-S3-ETH-8DI-8RO** (relay version) | ~$45 | $8-12, 15-40 days | ~R850-R1,050 | Minor pin remap only |
+
+The **8DI-8RO relay variant** is worth considering — same ESP32-S3, same W5500 Ethernet, RS485, but with built-in 10A/250VAC relays instead of Darlington transistor outputs. Eliminates external relay boards for contactor switching.
+
+### Local Waveshare reseller
+- **Micro Robotics (robotics.org.za)** in Pretoria stocks some Waveshare ESP32 boards
+  - Confirmed: ESP32-S3 8-Channel I/O Controller (product code W32108)
+  - Phone: 012 665 5713 — worth calling to check 8DI-8DO/8RO stock or ordering
+  - Website: https://www.robotics.org.za/W32108
+
+### Other boards researched (not suitable)
+
+| Board | Why not |
+|-------|---------|
+| M5Stack StamPLC ($43) | Only 4 relay outputs, no Ethernet |
+| DFRobot Edge101 ($40) | Only 11 GPIOs, no dedicated industrial I/O |
+| EBYTE ECM50-A ($35) | Only 2 DI + 2 DO — far too few |
+| NORVI ESP32 ($54-134) | No SA distributor, import from Sri Lanka |
+| LILYGO T-ETH-Elite | Dev board only, no industrial I/O or enclosure |
+
+### Import duties to SA
+- Electronic dev boards/modules: typically **0-10%** ad valorem
+- VAT: **15%** on CIF value (cost + insurance + freight)
+- Shipments under **R500** may avoid customs processing
+- Amazon Global collects duties at checkout; AliExpress does not (pay on delivery)
+
+### Recommendation
+**Order 3-5 Waveshare boards from AliExpress** (~R3,000-R5,000 total). Per-unit cost is a fraction of "industrial" alternatives, firmware runs without changes, and having spares on hand solves the availability problem. For industrial presentation, buy a proper DIN-rail ABS enclosure with cable glands from RS Components SA locally.
