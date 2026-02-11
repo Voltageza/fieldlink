@@ -4,7 +4,8 @@ on:
   push:
     branches: [main]
     paths:
-      - 'Main Code/FieldLink_Main_Code/**'
+      - 'Main Code/shared/**'
+      - 'Main Code/projects/pump-controller/**'
       - '.github/workflows/build-firmware.yml'
   workflow_dispatch:  # Allow manual trigger
 
@@ -53,26 +54,26 @@ jobs:
               '#define WEB_AUTH_PASS \"' + os.environ.get('WEB_PASS', '').strip() + '\"',
               '#endif',
           ]
-          with open('Main Code/FieldLink_Main_Code/src/secrets.h', 'w') as f:
+          with open('Main Code/projects/pump-controller/src/secrets.h', 'w') as f:
               f.write('\n'.join(lines) + '\n')
           print('secrets.h created successfully')
           "
 
       - name: Build firmware
         run: |
-          cd "Main Code/FieldLink_Main_Code"
+          cd "Main Code/projects/pump-controller"
           pio run
 
       - name: Get version from source
         id: version
         run: |
-          VERSION=$(grep '#define FW_VERSION' "Main Code/FieldLink_Main_Code/src/main.cpp" | cut -d'"' -f2)
+          VERSION=$(grep '#define FW_VERSION' "Main Code/projects/pump-controller/src/main.cpp" | cut -d'"' -f2)
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Firmware version: $VERSION"
 
       - name: Rename firmware with version
         run: |
-          cp "Main Code/FieldLink_Main_Code/.pio/build/esp32-s3/firmware.bin" "firmware_v${{ steps.version.outputs.version }}.bin"
+          cp "Main Code/projects/pump-controller/.pio/build/esp32-s3/firmware.bin" "firmware_v${{ steps.version.outputs.version }}.bin"
 
       - name: Upload firmware artifact
         uses: actions/upload-artifact@v4
@@ -115,11 +116,11 @@ jobs:
 
           if [ "$HTTP_STATUS" -ge 200 ] && [ "$HTTP_STATUS" -lt 300 ]; then
             echo ""
-            echo "✅ Firmware uploaded successfully!"
-            echo "📥 OTA URL: ${SUPABASE_URL}/storage/v1/object/public/${STORAGE_PATH}"
+            echo "Firmware uploaded successfully!"
+            echo "OTA URL: ${SUPABASE_URL}/storage/v1/object/public/${STORAGE_PATH}"
           else
             echo ""
-            echo "❌ Upload failed with status $HTTP_STATUS"
+            echo "Upload failed with status $HTTP_STATUS"
             exit 1
           fi
 

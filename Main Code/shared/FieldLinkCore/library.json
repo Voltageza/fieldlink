@@ -1,0 +1,22 @@
+{
+  "name": "FieldLinkCore",
+  "version": "1.0.0",
+  "description": "Shared board support library for Waveshare ESP32-S3 POE-ETH-8DI-8DO projects",
+  "keywords": "esp32, iot, waveshare, fieldlink",
+  "authors": [
+    {
+      "name": "Electrical Pro / VoltageZA"
+    }
+  ],
+  "frameworks": "arduino",
+  "platforms": "espressif32",
+  "dependencies": [
+    { "name": "knolleary/PubSubClient", "version": "^2.8" },
+    { "name": "4-20ma/ModbusMaster", "version": "^2.0.1" },
+    { "name": "bblanchon/ArduinoJson", "version": "^6.21.3" },
+    { "name": "ESPAsyncWebServer", "url": "https://github.com/me-no-dev/ESPAsyncWebServer.git" },
+    { "name": "AsyncTCP", "url": "https://github.com/me-no-dev/AsyncTCP.git" },
+    { "name": "WiFiManager", "url": "https://github.com/tzapu/WiFiManager.git" },
+    { "name": "arduino-libraries/Ethernet", "version": "^2.0.2" }
+  ]
+}
