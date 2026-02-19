@@ -1,0 +1,13 @@
+{
+    "name": "FieldLinkCore",
+    "version": "2.11.0",
+    "description": "Shared board support library for FieldLink IoT devices (Waveshare ESP32-S3 POE-ETH-8DI-8DO)",
+    "keywords": "iot, esp32, fieldlink, waveshare",
+    "authors": [
+        {
+            "name": "Electrical Pro / VoltageZA"
+        }
+    ],
+    "frameworks": "arduino",
+    "platforms": "espressif32"
+}
