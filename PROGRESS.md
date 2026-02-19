@@ -1,5 +1,30 @@
 # FieldLink Upgrade Progress
 
+## Current Status (2026-02-19)
+
+**Firmware v2.10.0** running on both devices (monolithic code). Refactored v2.11.0 (shared library) exists but has **not been flashed** yet.
+
+| Device | ID | Status | Notes |
+|--------|----|--------|-------|
+| Primary | FL-22F968 | Online, v2.10.0 | Fully operational |
+| adam2 | FL-CC8CA0 | Added to registry | Needs telemetry verification |
+
+**Blocking:** Nothing critical. Next steps are testing + verification.
+
+---
+
+## Next Session (Prioritized)
+
+1. [ ] Verify FL-CC8CA0 telemetry on portal (fieldlogic.co.za)
+2. [ ] Verify FL-CC8CA0 on dashboard (voltageza.github.io/fieldlink-dashboard)
+3. [ ] Test MQTT topics for second device (`fieldlink/FL-CC8CA0/telemetry`, `fieldlink/FL-CC8CA0/command`)
+4. [ ] Test fault delays on FL-22F968 (set delay via Config modal, trigger fault, verify timing)
+5. [ ] Test delay persistence after reboot
+6. [ ] Update local `secrets.h` with new MQTT password
+7. [ ] Flash refactored v2.11.0 firmware (OTA via Supabase or USB)
+
+---
+
 ## Completed
 
 ### Firmware (main.cpp) - v2.10.0
@@ -128,9 +153,11 @@ Complete documentation of the FieldLink hosting and infrastructure:
 
 ## How to Resume
 
+**Start here:** Check the **Current Status** and **Next Session** sections at the top.
+
 **Reference:** See `SYSTEM_ARCHITECTURE.txt` for full system documentation.
 
-Firmware v2.10.0 is now running. Continue testing:
+### Testing Notes
 
 1. **Test fault delays:**
    - Set delay via portal Config modal (e.g., 5 seconds)
@@ -391,3 +418,30 @@ The **8DI-8RO relay variant** is worth considering — same ESP32-S3, same W5500
 
 ### Recommendation
 **Order 3-5 Waveshare boards from AliExpress** (~R3,000-R5,000 total). Per-unit cost is a fraction of "industrial" alternatives, firmware runs without changes, and having spares on hand solves the availability problem. For industrial presentation, buy a proper DIN-rail ABS enclosure with cable glands from RS Components SA locally.
+
+---
+
+## Session Log: 2026-02-16
+
+### Second Device Setup — FL-CC8CA0 ("adam2")
+
+**Device:** Waveshare ESP32-S3-POE-ETH-8DI-8DO, Device ID: FL-CC8CA0
+**Firmware:** Already flashed (pump-controller)
+
+**Completed:**
+- [x] QR label generated (device-qr-FL-CC8CA0.html + PDF)
+- [x] Device added to `device_registry` in Supabase
+- [x] Fixed device_id typo in registry (`FLCC8CA0` → `FL-CC8CA0` — was missing dash)
+- [x] Device successfully claimed/added on portal (fieldlogic.co.za)
+
+**Bug found & fixed:**
+- `device_registry` table had **no RLS SELECT policy** — regular users couldn't read from it, causing "Device not found in registry" error when trying to add a device
+- Added policy: `Authenticated users can view device registry` (SELECT, `auth.role() = 'authenticated'`)
+- Also found pre-existing `Anyone can view device registry` policy (SELECT, `true`) — was already there but the real blocker was the **device_id typo**
+- Created `fieldlogic-portal/device-registry-setup.sql` documenting full table schema + RLS policies
+
+**Supabase project note:**
+- Project was hard to find — it was under a different Supabase organization (not "EPRO")
+- Free-tier projects get paused after 7 days of inactivity — keep this in mind
+
+**Still to do:** See **Next Session** section at the top.
