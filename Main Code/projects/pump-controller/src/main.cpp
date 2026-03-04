@@ -1,7 +1,7 @@
 /************************************************************
  * FieldLink Pump Controller
  * Board: ESP32-S3 POE ETH 8DI 8DO (Waveshare)
- * Version: 2.11.0
+ * Version: 2.11.1
  *
  * Uses FieldLinkCore shared library for board support,
  * networking, MQTT, OTA, and web server.
@@ -24,7 +24,7 @@
 /* ================= PROJECT CONFIG ================= */
 
 #define FW_NAME    "ESP32 Pump Controller"
-#define FW_VERSION "2.11.0"
+#define FW_VERSION "2.11.1"
 #define HW_TYPE    "PUMP_ESP32S3"
 
 // BENCH TEST MODE - disable protections that require pump/load
@@ -765,7 +765,8 @@ bool isWithinSchedule() {
 void pumpMqttCallback(const char* cmd, unsigned int length) {
   // Handle UPDATE_FIRMWARE notification (library handles actual update)
   {
-    StaticJsonDocument<256> doc;
+    static StaticJsonDocument<256> doc;  // static to avoid stack overflow in TLS callback chain
+    doc.clear();
     DeserializationError error = deserializeJson(doc, cmd);
     if (!error) {
       const char* command = doc["command"];

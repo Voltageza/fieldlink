@@ -51,15 +51,17 @@ static void internalMqttCallback(char* topic, byte* payload, unsigned int length
   // Update activity tracker
   fl_lastMqttActivity = millis();
 
-  char cmd[FL_MAX_PAYLOAD_SIZE];
+  static char cmd[FL_MAX_PAYLOAD_SIZE];  // static to avoid stack overflow in TLS callback chain
   memcpy(cmd, payload, length);
   cmd[length] = '\0';
 
   Serial.print("MQTT CMD: "); Serial.println(cmd);
 
   // Try parsing as JSON for UPDATE_FIRMWARE
-  StaticJsonDocument<256> doc;
-  DeserializationError error = deserializeJson(doc, cmd);
+  // Cast to const char* to force copy mode — preserves cmd buffer for project callback
+  static StaticJsonDocument<256> doc;  // static to reduce stack usage
+  doc.clear();
+  DeserializationError error = deserializeJson(doc, (const char*)cmd);
 
   if (!error) {
     const char* command = doc["command"];

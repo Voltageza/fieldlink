@@ -26,7 +26,7 @@
 /* ================= PROJECT CONFIG ================= */
 
 #define FW_NAME    "ESP32 Eve 3-Pump Controller"
-#define FW_VERSION "1.0.0"
+#define FW_VERSION "1.0.1"
 #define HW_TYPE    "EVE_ESP32S3"
 
 #define NUM_PUMPS 3
@@ -780,7 +780,8 @@ bool isWithinSchedule() {
 void eveMqttCallback(const char* cmd, unsigned int length) {
   // Handle UPDATE_FIRMWARE notification (library handles actual update)
   {
-    StaticJsonDocument<512> doc;
+    static StaticJsonDocument<512> doc;  // static to avoid stack overflow in TLS callback chain
+    doc.clear();
     DeserializationError error = deserializeJson(doc, cmd);
     if (!error) {
       const char* command = doc["command"];
