@@ -38,6 +38,8 @@ jobs:
           WEBHOOK_URL: ${{ secrets.NOTIFICATION_WEBHOOK_URL }}
           OTA_PASS: ${{ secrets.OTA_PASSWORD }}
           WEB_PASS: ${{ secrets.WEB_AUTH_PASS }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           python3 -c "
           import os
@@ -52,6 +54,8 @@ jobs:
               '#define OTA_PASSWORD \"' + os.environ.get('OTA_PASS', '').strip() + '\"',
               '#define WEB_AUTH_USER \"admin\"',
               '#define WEB_AUTH_PASS \"' + os.environ.get('WEB_PASS', '').strip() + '\"',
+              '#define TELEGRAM_BOT_TOKEN \"' + os.environ.get('TELEGRAM_TOKEN', '').strip() + '\"',
+              '#define TELEGRAM_CHAT_ID \"' + os.environ.get('TELEGRAM_CHAT', '').strip() + '\"',
               '#endif',
           ]
           with open('Main Code/projects/pump-controller/src/secrets.h', 'w') as f:
