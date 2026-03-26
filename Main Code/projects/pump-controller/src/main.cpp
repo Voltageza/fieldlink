@@ -26,7 +26,7 @@
 /* ================= PROJECT CONFIG ================= */
 
 #define FW_NAME    "ESP32 Pump Controller"
-#define FW_VERSION "3.0.0"
+#define FW_VERSION "3.1.0"
 #define HW_TYPE    "PUMP_ESP32S3"
 
 #define NUM_PUMPS 3
@@ -95,20 +95,20 @@ struct Pump {
 
   // NVS namespace
   char nvsNamespace[8];    // "prot_p1", "prot_p2", "prot_p3"
+
+  // Per-pump schedule
+  bool scheduleEnabled;
+  uint8_t scheduleStartHour;
+  uint8_t scheduleStartMinute;
+  uint8_t scheduleEndHour;
+  uint8_t scheduleEndMinute;
+  uint8_t scheduleDays;       // Bitmask: bit0=Sun...bit6=Sat (0x7F = all days)
+  bool wasWithinSchedule;
 };
 
 Pump pumps[NUM_PUMPS];
 
-// Schedule settings (shared across all pumps)
-bool scheduleEnabled = false;
-uint8_t scheduleStartHour = 6;
-uint8_t scheduleStartMinute = 0;
-uint8_t scheduleEndHour = 18;
-uint8_t scheduleEndMinute = 0;
-uint8_t scheduleDays = 0x7F;  // Bitmask: bit0=Sun...bit6=Sat (0x7F = all days)
-bool wasWithinSchedule = false;
-
-// Ruraflex TOU settings (Eskom South Africa)
+// Ruraflex TOU settings (Eskom South Africa) - global, overrides all pump schedules
 bool ruraflexEnabled = false;
 
 // Non-blocking timing
@@ -441,11 +441,11 @@ PumpState evaluatePumpState(Pump& p);
 void updatePumpState(Pump& p);
 void loadPumpProtection(Pump& p);
 void savePumpProtection(Pump& p);
-void loadScheduleConfig();
-void saveScheduleConfig();
+void loadPumpSchedule(Pump& p);
+void savePumpSchedule(Pump& p);
 void loadRuraflexConfig();
 void saveRuraflexConfig();
-bool isWithinSchedule();
+bool isWithinSchedule(const Pump& p);
 
 /* ================= PUMP INITIALIZATION ================= */
 
@@ -479,6 +479,13 @@ static void initPump(Pump& p, uint8_t id, uint8_t doCont, uint8_t doFault,
   p.dryrunConditionActive = false;
   strncpy(p.nvsNamespace, nvs, sizeof(p.nvsNamespace) - 1);
   p.nvsNamespace[sizeof(p.nvsNamespace) - 1] = '\0';
+  p.scheduleEnabled = false;
+  p.scheduleStartHour = 6;
+  p.scheduleStartMinute = 0;
+  p.scheduleEndHour = 18;
+  p.scheduleEndMinute = 0;
+  p.scheduleDays = 0x7F;
+  p.wasWithinSchedule = false;
 }
 
 void initPumps() {
@@ -521,6 +528,7 @@ void triggerFault(Pump& p, FaultType type) {
     fl_setDO(p.doFaultAlarm, true);
 
     Serial.printf("!!! PUMP %d FAULT: %s (I=%.2fA) !!!\n", p.id, faultTypeToString(type), p.faultCurrent);
+    fl_sendFaultNotification(p.id, faultTypeToString(type), p.faultCurrent);
   }
 }
 
@@ -672,30 +680,34 @@ void savePumpProtection(Pump& p) {
   Serial.printf("Pump %d protection saved\n", p.id);
 }
 
-/* ================= SCHEDULE CONFIG ================= */
+/* ================= SCHEDULE CONFIG (per-pump) ================= */
 
-void loadScheduleConfig() {
-  fl_preferences.begin("schedule", true);
-  scheduleEnabled = fl_preferences.getBool("enabled", false);
-  scheduleStartHour = fl_preferences.getUChar("startH", 6);
-  scheduleStartMinute = fl_preferences.getUChar("startM", 0);
-  scheduleEndHour = fl_preferences.getUChar("endH", 18);
-  scheduleEndMinute = fl_preferences.getUChar("endM", 0);
-  scheduleDays = fl_preferences.getUChar("days", 0x7F);
+void loadPumpSchedule(Pump& p) {
+  char ns[12];
+  snprintf(ns, sizeof(ns), "sched_p%d", p.id);
+  fl_preferences.begin(ns, true);
+  p.scheduleEnabled = fl_preferences.getBool("en", false);
+  p.scheduleStartHour = fl_preferences.getUChar("sH", 6);
+  p.scheduleStartMinute = fl_preferences.getUChar("sM", 0);
+  p.scheduleEndHour = fl_preferences.getUChar("eH", 18);
+  p.scheduleEndMinute = fl_preferences.getUChar("eM", 0);
+  p.scheduleDays = fl_preferences.getUChar("days", 0x7F);
   fl_preferences.end();
-  Serial.println("Schedule config loaded");
+  Serial.printf("Pump %d schedule loaded\n", p.id);
 }
 
-void saveScheduleConfig() {
-  fl_preferences.begin("schedule", false);
-  fl_preferences.putBool("enabled", scheduleEnabled);
-  fl_preferences.putUChar("startH", scheduleStartHour);
-  fl_preferences.putUChar("startM", scheduleStartMinute);
-  fl_preferences.putUChar("endH", scheduleEndHour);
-  fl_preferences.putUChar("endM", scheduleEndMinute);
-  fl_preferences.putUChar("days", scheduleDays);
+void savePumpSchedule(Pump& p) {
+  char ns[12];
+  snprintf(ns, sizeof(ns), "sched_p%d", p.id);
+  fl_preferences.begin(ns, false);
+  fl_preferences.putBool("en", p.scheduleEnabled);
+  fl_preferences.putUChar("sH", p.scheduleStartHour);
+  fl_preferences.putUChar("sM", p.scheduleStartMinute);
+  fl_preferences.putUChar("eH", p.scheduleEndHour);
+  fl_preferences.putUChar("eM", p.scheduleEndMinute);
+  fl_preferences.putUChar("days", p.scheduleDays);
   fl_preferences.end();
-  Serial.println("Schedule config saved");
+  Serial.printf("Pump %d schedule saved\n", p.id);
 }
 
 /* ================= RURAFLEX CONFIG ================= */
@@ -750,23 +762,23 @@ bool isWithinRuraflex() {
   return isOffPeak;
 }
 
-bool isWithinSchedule() {
+bool isWithinSchedule(const Pump& p) {
   if (ruraflexEnabled) {
     return isWithinRuraflex();
   }
 
-  if (!scheduleEnabled) return true;
+  if (!p.scheduleEnabled) return true;
 
   struct tm timeinfo;
   if (!getLocalTime(&timeinfo, 10)) return true;
 
-  if (!(scheduleDays & (1 << timeinfo.tm_wday))) {
+  if (!(p.scheduleDays & (1 << timeinfo.tm_wday))) {
     return false;
   }
 
   int nowMins = timeinfo.tm_hour * 60 + timeinfo.tm_min;
-  int startMins = scheduleStartHour * 60 + scheduleStartMinute;
-  int endMins = scheduleEndHour * 60 + scheduleEndMinute;
+  int startMins = p.scheduleStartHour * 60 + p.scheduleStartMinute;
+  int endMins = p.scheduleEndHour * 60 + p.scheduleEndMinute;
 
   if (startMins <= endMins) {
     return nowMins >= startMins && nowMins < endMins;
@@ -915,21 +927,24 @@ void pumpMqttCallback(const char* cmd, unsigned int length) {
         return;
       }
 
-      // Shared schedule commands
+      // Per-pump schedule commands (optional "pump" field: 1/2/3, omit = all pumps)
       if (strcmp(command, "SET_SCHEDULE") == 0) {
-        if (doc.containsKey("enabled"))
-          scheduleEnabled = doc["enabled"];
-        if (doc.containsKey("start_hour"))
-          scheduleStartHour = doc["start_hour"];
-        if (doc.containsKey("start_minute"))
-          scheduleStartMinute = doc["start_minute"];
-        if (doc.containsKey("end_hour"))
-          scheduleEndHour = doc["end_hour"];
-        if (doc.containsKey("end_minute"))
-          scheduleEndMinute = doc["end_minute"];
-        if (doc.containsKey("days"))
-          scheduleDays = doc["days"];
-        saveScheduleConfig();
+        int pumpIdx = -1;  // -1 = all pumps
+        if (doc.containsKey("pump")) {
+          int pn = doc["pump"];
+          if (pn >= 1 && pn <= NUM_PUMPS) pumpIdx = pn - 1;
+        }
+        for (int i = 0; i < NUM_PUMPS; i++) {
+          if (pumpIdx >= 0 && i != pumpIdx) continue;
+          Pump& p = pumps[i];
+          if (doc.containsKey("enabled"))      p.scheduleEnabled = doc["enabled"];
+          if (doc.containsKey("start_hour"))   p.scheduleStartHour = doc["start_hour"];
+          if (doc.containsKey("start_minute")) p.scheduleStartMinute = doc["start_minute"];
+          if (doc.containsKey("end_hour"))     p.scheduleEndHour = doc["end_hour"];
+          if (doc.containsKey("end_minute"))   p.scheduleEndMinute = doc["end_minute"];
+          if (doc.containsKey("days"))         p.scheduleDays = doc["days"];
+          savePumpSchedule(p);
+        }
         Serial.println("Schedule updated via MQTT");
         return;
       }
@@ -937,10 +952,6 @@ void pumpMqttCallback(const char* cmd, unsigned int length) {
       if (strcmp(command, "SET_RURAFLEX") == 0) {
         if (doc.containsKey("enabled"))
           ruraflexEnabled = doc["enabled"];
-        if (ruraflexEnabled && scheduleEnabled) {
-          scheduleEnabled = false;
-          saveScheduleConfig();
-        }
         saveRuraflexConfig();
         Serial.println("Ruraflex updated via MQTT");
         return;
@@ -951,7 +962,7 @@ void pumpMqttCallback(const char* cmd, unsigned int length) {
         StaticJsonDocument<1024> resp;
         resp["type"] = "settings";
 
-        // Per-pump protection
+        // Per-pump protection + schedule
         for (int i = 0; i < NUM_PUMPS; i++) {
           char key[8];
           snprintf(key, sizeof(key), "p%d", i + 1);
@@ -962,15 +973,14 @@ void pumpMqttCallback(const char* cmd, unsigned int length) {
           pObj["dry_current"] = pumps[i].dryCurrentThreshold;
           pObj["overcurrent_delay_s"] = pumps[i].overcurrentDelayS;
           pObj["dryrun_delay_s"] = pumps[i].dryrunDelayS;
+          pObj["sch_en"] = pumps[i].scheduleEnabled;
+          pObj["sch_sH"] = pumps[i].scheduleStartHour;
+          pObj["sch_sM"] = pumps[i].scheduleStartMinute;
+          pObj["sch_eH"] = pumps[i].scheduleEndHour;
+          pObj["sch_eM"] = pumps[i].scheduleEndMinute;
+          pObj["sch_days"] = pumps[i].scheduleDays;
         }
 
-        // Shared schedule
-        resp["schedule_enabled"] = scheduleEnabled;
-        resp["schedule_start_hour"] = scheduleStartHour;
-        resp["schedule_start_minute"] = scheduleStartMinute;
-        resp["schedule_end_hour"] = scheduleEndHour;
-        resp["schedule_end_minute"] = scheduleEndMinute;
-        resp["schedule_days"] = scheduleDays;
         resp["ruraflex_enabled"] = ruraflexEnabled;
 
         struct tm timeinfo;
@@ -1014,10 +1024,12 @@ void pumpSerialCallback(const String& input) {
       }
       Serial.println();
     }
-    Serial.printf("Sensor: %s | Schedule: %s | Ruraflex: %s\n",
+    Serial.printf("Sensor: %s | Ruraflex: %s | Schedule: P1=%s P2=%s P3=%s\n",
                   fl_sensorOnline ? "ONLINE" : "OFFLINE",
-                  scheduleEnabled ? "ON" : "OFF",
-                  ruraflexEnabled ? "ON" : "OFF");
+                  ruraflexEnabled ? "ON" : "OFF",
+                  pumps[0].scheduleEnabled ? "ON" : "OFF",
+                  pumps[1].scheduleEnabled ? "ON" : "OFF",
+                  pumps[2].scheduleEnabled ? "ON" : "OFF");
   }
   else if (input == "HELP") {
     Serial.println("START1/2/3   - Start individual pump");
@@ -1143,16 +1155,21 @@ void setupPumpWebRoutes() {
     request->send(200, "application/json", response);
   });
 
-  // Shared schedule settings API
+  // Per-pump schedule settings API
   fl_server.on("/api/schedule", HTTP_GET, [](AsyncWebServerRequest *request){
     if (!fl_checkAuth(request)) return;
-    StaticJsonDocument<384> doc;
-    doc["enabled"] = scheduleEnabled;
-    doc["start_hour"] = scheduleStartHour;
-    doc["start_minute"] = scheduleStartMinute;
-    doc["end_hour"] = scheduleEndHour;
-    doc["end_minute"] = scheduleEndMinute;
-    doc["days"] = scheduleDays;
+    StaticJsonDocument<512> doc;
+    for (int i = 0; i < NUM_PUMPS; i++) {
+      char key[4];
+      snprintf(key, sizeof(key), "p%d", i + 1);
+      JsonObject pObj = doc.createNestedObject(key);
+      pObj["enabled"] = pumps[i].scheduleEnabled;
+      pObj["start_hour"] = pumps[i].scheduleStartHour;
+      pObj["start_minute"] = pumps[i].scheduleStartMinute;
+      pObj["end_hour"] = pumps[i].scheduleEndHour;
+      pObj["end_minute"] = pumps[i].scheduleEndMinute;
+      pObj["days"] = pumps[i].scheduleDays;
+    }
     doc["ruraflex_enabled"] = ruraflexEnabled;
     struct tm timeinfo;
     if (getLocalTime(&timeinfo, 10)) {
@@ -1184,7 +1201,7 @@ void setup() {
   // Set secrets via setters (library never includes secrets.h)
   fl_setMqttDefaults(DEFAULT_MQTT_HOST, DEFAULT_MQTT_PORT, DEFAULT_MQTT_USER, DEFAULT_MQTT_PASS);
   fl_setWebAuth(WEB_AUTH_USER, WEB_AUTH_PASS);
-  fl_setWebhookUrl(NOTIFICATION_WEBHOOK_URL);
+  fl_setTelegram(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID);
   fl_setFirmwareInfo(FW_NAME, FW_VERSION, HW_TYPE);
   fl_setOtaPassword(OTA_PASSWORD);
 
@@ -1205,17 +1222,20 @@ void setup() {
   for (int i = 0; i < NUM_PUMPS; i++) {
     loadPumpProtection(pumps[i]);
   }
-  loadScheduleConfig();
+  for (int i = 0; i < NUM_PUMPS; i++) {
+    loadPumpSchedule(pumps[i]);
+  }
   loadRuraflexConfig();
 
-  // Initialize schedule state and auto-start if booting within schedule window
-  wasWithinSchedule = isWithinSchedule();
-  Serial.printf("Schedule init: currently %s schedule window\n", wasWithinSchedule ? "within" : "outside");
-  if ((scheduleEnabled || ruraflexEnabled) && wasWithinSchedule) {
-    for (int i = 0; i < NUM_PUMPS; i++) {
-      pumps[i].startCommand = true;
+  // Initialize per-pump schedule state and auto-start if booting within schedule window
+  for (int i = 0; i < NUM_PUMPS; i++) {
+    Pump& p = pumps[i];
+    p.wasWithinSchedule = isWithinSchedule(p);
+    Serial.printf("Pump %d schedule init: %s window\n", p.id, p.wasWithinSchedule ? "within" : "outside");
+    if ((p.scheduleEnabled || ruraflexEnabled) && p.wasWithinSchedule) {
+      p.startCommand = true;
+      Serial.printf("Pump %d: Boot within allowed hours, starting\n", p.id);
     }
-    Serial.println("Schedule: Boot within allowed hours, starting all pumps");
   }
 
   // Set callbacks
@@ -1269,33 +1289,29 @@ void loop() {
       updatePumpState(pumps[i]);
     }
 
-    // Check schedule/Ruraflex (shared for all pumps)
-    bool scheduleAllows = isWithinSchedule();
-    if (scheduleEnabled || ruraflexEnabled) {
-      if (scheduleAllows && !wasWithinSchedule) {
-        for (int i = 0; i < NUM_PUMPS; i++) {
-          if (pumps[i].state != FAULT) {
-            pumps[i].startCommand = true;
+    // Check per-pump schedule/Ruraflex
+    for (int i = 0; i < NUM_PUMPS; i++) {
+      Pump& p = pumps[i];
+      bool scheduleAllows = isWithinSchedule(p);
+      if (p.scheduleEnabled || ruraflexEnabled) {
+        if (scheduleAllows && !p.wasWithinSchedule) {
+          if (p.state != FAULT) {
+            p.startCommand = true;
           }
+          Serial.printf("Schedule: Pump %d entering allowed hours\n", p.id);
         }
-        Serial.println("Schedule: Entering allowed hours, starting all pumps");
-      }
-      if (!scheduleAllows && wasWithinSchedule) {
-        for (int i = 0; i < NUM_PUMPS; i++) {
-          if (pumps[i].startCommand) {
-            pumps[i].startCommand = false;
-          }
+        if (!scheduleAllows && p.wasWithinSchedule) {
+          p.startCommand = false;
+          Serial.printf("Schedule: Pump %d outside allowed hours\n", p.id);
         }
-        Serial.println("Schedule: Outside allowed hours, stopping all pumps");
+        p.wasWithinSchedule = scheduleAllows;
       }
-      wasWithinSchedule = scheduleAllows;
     }
 
     // Update DO outputs per pump
-    bool scheduleAllowsNow = isWithinSchedule();
     for (int i = 0; i < NUM_PUMPS; i++) {
       Pump& p = pumps[i];
-      bool desiredDO = (p.startCommand && p.state != FAULT && scheduleAllowsNow);
+      bool desiredDO = (p.startCommand && p.state != FAULT && isWithinSchedule(p));
       if (desiredDO != p.lastDOState) {
         fl_setDO(p.doContactor, desiredDO);
         Serial.printf("Pump %d contactor: %s\n", p.id, desiredDO ? "ON" : "OFF");
