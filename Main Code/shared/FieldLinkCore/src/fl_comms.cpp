@@ -192,7 +192,8 @@ void fl_initNetwork() {
   if (!fl_useEthernet) {
     WiFi.softAPdisconnect(true);
     WiFi.mode(WIFI_STA);
-    Serial.println("Soft AP disabled, WiFi in STA mode");
+    WiFi.setAutoReconnect(true);
+    Serial.println("Soft AP disabled, WiFi in STA mode (auto-reconnect enabled)");
   } else {
     WiFi.mode(WIFI_OFF);
     Serial.println("WiFi disabled (Ethernet mode)");
