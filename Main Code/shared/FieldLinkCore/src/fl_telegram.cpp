@@ -3,44 +3,54 @@
 #include "fl_storage.h"
 #include <HTTPClient.h>
 
-static char _webhook_url[256] = "";
+static char _bot_token[64] = "";
+static char _chat_id[24] = "";
 
-void fl_setWebhookUrl(const char* url) {
-  strncpy(_webhook_url, url, sizeof(_webhook_url) - 1);
+void fl_setTelegram(const char* botToken, const char* chatId) {
+  strncpy(_bot_token, botToken, sizeof(_bot_token) - 1);
+  strncpy(_chat_id, chatId, sizeof(_chat_id) - 1);
 }
 
-void fl_sendWebhook() {
+void fl_sendFaultNotification(int pump, const char* faultType, float current) {
   if (!fl_wifiConnected) {
     Serial.println("Cannot send notification - WiFi not connected");
     return;
   }
 
-  if (_webhook_url[0] == '\0') {
-    Serial.println("No webhook URL configured");
+  if (_bot_token[0] == '\0' || _chat_id[0] == '\0') {
+    Serial.println("Telegram not configured");
     return;
   }
 
+  // Build Telegram Bot API URL
+  char url[128];
+  snprintf(url, sizeof(url),
+    "https://api.telegram.org/bot%s/sendMessage", _bot_token);
+
+  // Build JSON payload with escaped newlines for Telegram API
+  char payload[512];
+  snprintf(payload, sizeof(payload),
+    "{\"chat_id\":\"%s\","
+    "\"parse_mode\":\"Markdown\","
+    "\"text\":\"*FAULT ALERT*\\n\\n"
+    "Device: *%s*\\n"
+    "Pump: *%d*\\n"
+    "Fault: *%s* (%.1fA)\\n\\n"
+    "Open FieldLogic to view details and reset.\"}",
+    _chat_id, fl_DEVICE_ID, pump, faultType, current);
+
+  Serial.printf("Sending Telegram to chat %s\n", _chat_id);
+
   HTTPClient http;
-  http.begin(_webhook_url);
+  http.begin(url);
   http.addHeader("Content-Type", "application/json");
-
-  // Build JSON payload with device_id
-  String payload = "{\"device_id\":\"";
-  payload += fl_DEVICE_ID;
-  payload += "\"}";
-
-  Serial.printf("Sending fault notification: %s\n", payload.c_str());
 
   int httpCode = http.POST(payload);
 
   if (httpCode > 0) {
-    Serial.printf("Notification sent, response code: %d\n", httpCode);
-    if (httpCode == HTTP_CODE_OK) {
-      String response = http.getString();
-      Serial.printf("Response: %s\n", response.c_str());
-    }
+    Serial.printf("Telegram sent, response: %d\n", httpCode);
   } else {
-    Serial.printf("Notification failed, error: %s\n", http.errorToString(httpCode).c_str());
+    Serial.printf("Telegram failed: %s\n", http.errorToString(httpCode).c_str());
   }
 
   http.end();
