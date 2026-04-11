@@ -1,44 +1,97 @@
 # FieldLink Upgrade Progress
 
-## Current Status (2026-04-09)
+## Current Status (2026-04-11)
 
-Both devices flashed to **Eve v1.2.1** and confirmed online at home. Portal fleet dashboard fixed — devices stay online in admin fleet view.
+Both devices still on **Eve v1.2.1** at home, unchanged. Session focus was the Adam v4 rewrite (BUG-001): full pump-controller single-motor 3-phase rewrite cut as `pump-v4.0.0-rc1`, parked on feature branches in both firmware and portal repos awaiting spare hardware + Agrico site validation.
 
 | Device | ID | FW | Telegram Group | Notes |
 |--------|----|-----|----------------|-------|
-| EVE #1 | FL-22F968 | **v1.2.1** | Agrico 1 (`-5222862641`) | Online, tested at home |
-| EVE #2 | FL-CC8CA0 | **v1.2.1** | Agrico 2 (`-5229237038`) | Online, tested at home |
+| EVE #1 | FL-22F968 | **Eve v1.2.1** | Agrico 1 (`-5222862641`) | Online, tested at home |
+| EVE #2 | FL-CC8CA0 | **Eve v1.2.1** | Agrico 2 (`-5229237038`) | Online, tested at home |
 
-**Blocking:** Site network at Agrico must allow outbound TCP 8883 + UDP 123 before devices can be reinstalled.
+**Blocking — Eve deployment:** Site network at Agrico must allow outbound TCP 8883 + UDP 123 before devices can be reinstalled.
+
+**Blocking — Adam v4 release:** (1) no spare ESP32-S3 at base for SIM-mode bench testing, (2) no site visit scheduled yet to run the `SITE_VALIDATION.md` checklist against a real SDM630 + real motor. Production Eve units explicitly **not** being reflashed for bench testing (see memory/feedback_production_hardware.md).
 
 ---
 
 ## Next Session (Prioritized)
 
-1. [ ] **Get site IT to open outbound ports** at Agrico site: **TCP 8883** (HiveMQ MQTT TLS) and **UDP 123** (NTP). Without this, devices will keep dropping offline.
-2. [ ] **Reinstall both devices at Agrico site** — once port 8883 is confirmed open
-3. [ ] **Commit and tag Eve v1.2.1 firmware** — version bump + periodic status publish + auto-reconnect fix. Tag `eve-v1.2.1`, upload to Supabase Storage for future OTA.
-4. [ ] **Merge `feature/frontend-fixes` to main** in fieldlogic-portal (per-pump schedule UI goes live now that devices are on v1.2.1)
-5. [ ] Rename FL-22F968 in portal from "ADAM" to "EVE #1"
-6. [ ] Reset Pump 3 protection on FL-CC8CA0 (garbage defaults: max=33A, dry=33A, oc_delay=23s)
-7. [ ] Connect both devices to 3-phase energy meters and verify pump control
-8. [ ] Test per-pump START/STOP/RESET via portal
-9. [ ] Add customers to their respective Telegram groups
+**Adam v4 track (blocked on hardware):**
+1. [ ] **When a spare ESP32-S3 arrives** — flash `feature/adam-v4-rc1` over USB, join MQTT under a throwaway device ID, drive SIM mode via `mqtt_test_protection.py`, exercise every fault path in `SITE_VALIDATION.md`. Must blank or redirect `TELEGRAM_CHAT_ID` first so fault tests don't spam customers.
+2. [ ] **On next Agrico site visit** — run full `SITE_VALIDATION.md` checklist against real SDM630 + real motor. Capture results back into PROGRESS.md.
+3. [ ] **If site validation passes** — bump `FW_VERSION` to `4.0.0` (drop `-rc1`), merge both feature branches to main (firmware + portal together), let `build-pump-firmware` cut `pump-v4.0.0` and upload to Supabase Storage.
+4. [ ] **Close BUG-001** in BUGS.md once `pump-v4.0.0` is tagged.
+
+**Eve deployment track (blocked on site network):**
+5. [ ] **Get site IT to open outbound ports** at Agrico site: **TCP 8883** (HiveMQ MQTT TLS) and **UDP 123** (NTP).
+6. [ ] **Reinstall both Eve devices at Agrico site** — once port 8883 is confirmed open.
+7. [ ] **Push local main** — firmware repo `main` is 5 commits ahead of origin (includes the committed Eve v1.2.1 work). Nothing blocks this; just needs a `git push`.
+8. [ ] **Merge `feature/frontend-fixes` to main** in fieldlogic-portal (per-pump schedule UI goes live once Eve devices are on v1.2.1 at site).
+
+**Housekeeping:**
+9. [ ] Rename FL-22F968 in portal from "ADAM" to "EVE #1"
+10. [ ] Reset Pump 3 protection on FL-CC8CA0 (garbage defaults: max=33A, dry=33A, oc_delay=23s)
+11. [ ] Add customers to their respective Telegram groups
 
 ---
 
-## Pending Changes (Not Yet Pushed — Firmware Repo)
+## Pending Changes (Not Yet on Origin Main)
 
-- **Eve v1.2.1 firmware changes** (all local, not committed/tagged/pushed):
-  - `FW_VERSION` bumped to `1.2.1` in `eve-controller/src/main.cpp`
-  - `WiFi.setAutoReconnect(true)` in `fl_comms.cpp`
-  - Periodic "online" status publish every 60s in `fl_comms.cpp` (clears stale LWT)
-  - `FL_MQTT_STATUS_INTERVAL_MS` constant added to `fl_comms.h`
-- **Portal `feature/frontend-fixes` branch** — per-pump schedule UI (pump tabs above schedule card, Save All Pumps button). Merge to main after confirming devices work at site.
+**Firmware repo (`Voltageza/fieldlink`):**
+- `main` is **5 commits ahead of `origin/main`** — all Eve v1.2.1 + BUGS.md work (tag `eve-v1.2.1` already cut locally). Just needs `git push origin main` when ready.
+- `feature/adam-v4-rc1` — pushed to origin, draft PR [#1](https://github.com/Voltageza/fieldlink/pull/1) open. Contains the full Adam v4.0.0-rc1 rewrite (Phases 1/2/3/5/6). fl-tests CI green on PR. Does **not** trigger `build-pump-firmware` (workflow filters on `main`), so no `pump-v4.0.0-rc1` tag or Supabase upload has been cut yet — that's intentional, it'll fire when the branch merges to main after site validation.
+
+**Portal repo (`Voltageza/fieldlogic-portal`):**
+- `feature/adam-v4-rc1` — pushed to origin. Contains the Adam v4 single-pump UI variant (fault banner, avg current + imbalance metrics, imbalance/phase-loss protection + threshold + delay controls, all `.adam-v4-only`-gated). No PR open yet; opens in lockstep with the firmware PR at merge time.
+- `feature/frontend-fixes` — per-pump schedule UI (pump tabs above schedule card, Save All Pumps button). Unchanged from previous session. Merge to main after confirming Eve devices work at site.
 
 ---
 
 ## Completed
+
+### Session 2026-04-11 (Adam v4.0.0-rc1 rewrite — BUG-001)
+Rewrote `pump-controller` from the 2026-03-04 3-pump Eve clone back to its original single-motor 3-phase design. Delivered as a release candidate, parked on feature branches, awaiting spare hardware for bench SIM testing and a site visit for real-world validation. Production Eve devices were deliberately not touched.
+
+- [x] **Phase 1 — Protection math extracted to `fl_protection.{h,cpp}`**
+  - Pure functions: `fl_prot_average3`, `fl_prot_phaseImbalancePct`, `fl_prot_phaseLoss`, `fl_prot_overcurrent`, `fl_prot_dryRun`
+  - `fl_DebounceState` POD + `fl_prot_debounceInit` / `fl_prot_debounceTick` for fault debouncing
+  - New `projects/fl-tests` PlatformIO project with Unity native tests covering every primitive
+  - New `.github/workflows/fl-tests.yml` runs `pio test -e native` on push + pull_request
+  - Tests pass in CI (19s on PR #1)
+- [x] **Phase 2 — Runtime SIM mode** (`fl_sim.{h,cpp}`)
+  - `fl_simMode` flag, `fl_setSimMode()`, `fl_simSetPhases()` for synthetic phase readings
+  - `fl_modbus.cpp` short-circuits reads when sim active, leaving `fl_Va…fl_Ic` driven by the setter
+  - `fl_comms.cpp` internal MQTT callback handles `{"command":"SIM","enable":true}` and `{"command":"SIM","V1":...,"I1":...}` for bench injection without a meter
+- [x] **Phase 3 — Adam single-motor rewrite** (`pump-controller/src/main.cpp`)
+  - One `Motor` struct, DO0 (contactor) + DO4 (fault alarm) + DI1 (feedback), mask `0xEE` forces unused DOs off
+  - STOPPED / RUNNING / FAULT state machine with debounced transitions
+  - Six fault paths (OVERCURRENT / PHASE_IMBALANCE / PHASE_LOSS / DRY_RUN / SENSOR_FAULT / START_FAILURE), all delegating to `fl_protection` primitives
+  - NVS namespaces `prot_adam` (thresholds + enables + delays) and `sched_adam` (schedule + Ruraflex)
+  - Telemetry contract: `Va/Vb/Vc + Ia/Ib/Ic + avgI + imb + state/cmd/fault/faultI/cf/mode` + `contactor_confirmed` alias — aligned with the portal's existing single-pump UI contract
+  - MQTT commands: START / STOP / RESET / SET_THRESHOLDS / SET_PROTECTION / SET_DELAYS / SET_SCHEDULE / SET_RURAFLEX / GET_SETTINGS / STATUS (no pump index)
+  - `FW_VERSION 4.0.0-rc1`, `FW_NAME "ESP32 Adam Single-Motor Controller"`, `HW_TYPE PUMP_ESP32S3` (unchanged so the portal still routes it)
+  - Local target build: 90.3% flash (1,184,201 / 1,310,720 bytes), 17.0% RAM, clean link
+- [x] **Phase 4 — Portal Adam UI variant** (`fieldlogic-portal/index.html`)
+  - New `#device-fault-banner` under state readout: `FAULT: <type> @ <I>A` when in fault, hidden otherwise
+  - New `#device-metrics-row` showing avg current + phase imbalance %
+  - Protection Settings card: two new `adam-v4-only` toggles (phase imbalance, phase loss)
+  - Threshold Settings card: two new `adam-v4-only` inputs (imbalance %, phase-loss current A)
+  - Fault Delay Settings card: two new `adam-v4-only` inputs (imbalance delay s, phase-loss delay s)
+  - JS: `updateDeviceStatus` hydrates new telemetry, `updateDeviceSettings` toggles `.adam-v4-only` based on `hardware_type !== 'EVE_ESP32S3'` and hydrates new fields from `GET_SETTINGS`, `doSaveProtection`/`doUpdateThresholds`/`doSaveDelays` include new keys only when `!isEve` (Eve payloads stay byte-for-byte identical), back-compat reads both `overcurrent_enabled` and legacy `overcurrent_protection`
+- [x] **Phase 5 — rc-aware CI/CD** (`.github/workflows/build-pump-firmware.yml`)
+  - Version step now detects `-rc`/`-beta`/`-alpha`/`-dev` suffixes and sets `prerelease=true` accordingly
+  - Release body surfaces the prerelease state
+  - Supabase upload path handles suffixes transparently (`PUMP_ESP32S3/v4.0.0-rc1.bin` when the branch merges)
+- [x] **Phase 6 — Site validation checklist** (`Main Code/projects/pump-controller/SITE_VALIDATION.md`)
+  - Pre-visit prep, wiring verification, power-on baseline, per-fault-path exercises (OC / IMB / PL / DR / SENSOR / START), schedule + Ruraflex smoke test, network resilience, OTA round-trip, sign-off
+  - The explicit gate between `pump-v4.0.0-rc1` and `pump-v4.0.0`
+- [x] **Rollout branches pushed (no merge)**
+  - Firmware: `Voltageza/fieldlink:feature/adam-v4-rc1` — draft PR [#1](https://github.com/Voltageza/fieldlink/pull/1), `fl-tests` CI green, `build-pump-firmware` intentionally not triggered (workflow is `main`-only, so no `pump-v4.0.0-rc1` tag or Supabase upload yet)
+  - Portal: `Voltageza/fieldlogic-portal:feature/adam-v4-rc1` — pushed, no PR opened yet (non-interactive without live Adam device)
+- [x] **Production hardware untouched** — FL-22F968 detected on COM6 during session; flagged and refused to flash. Saved as feedback memory (`feedback_production_hardware.md`): never reflash a deployed FieldLink device without explicit "pulled from site" confirmation.
+- [x] **BUGS.md BUG-002 rewritten** — site-only meter access makes SIM the primary dev approach; releases must use `-rc` until site validation has been run
+- [x] **BUGS.md BUG-001 status** → IN PROGRESS (rc1 cut, awaiting site validation)
 
 ### Session 2026-04-09 (firmware flash + portal fleet fix)
 - [x] **Both devices flashed to Eve v1.2.1** via web UI (`/update`). FL-CC8CA0 flashed first (secrets.h already set), then rebuilt with FL-22F968's chat ID and flashed second. Both confirmed online.

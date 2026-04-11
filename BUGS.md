@@ -33,7 +33,7 @@ Known bugs, issues, and their status across firmware, portal, and dashboard.
 - **Notes:** Never tag a firmware release as "validated" on the basis of simulation alone. Tag with a `-rc` suffix if needed to mark "sim-validated, awaiting site". Only promote to unsuffixed tag after a passing Site Validation Checklist run.
 
 ### BUG-001 Adam (`pump-controller`) is a 3-pump clone of Eve, not a single-motor 3-phase controller
-- **Status:** OPEN
+- **Status:** IN PROGRESS (rc1 cut, awaiting site validation)
 - **Severity:** high
 - **Component:** firmware (pump-controller)
 - **Reported:** 2026-04-11
@@ -46,15 +46,26 @@ Known bugs, issues, and their status across firmware, portal, and dashboard.
   - Protection logic is wrong for a 3-phase motor (missing phase imbalance and phase-loss detection)
   - `HW_TYPE` misleadingly promises a different product than the code delivers
   - Confusion risk is high for any future contributor
-- **Fix (planned — Option A):** Rewrite `pump-controller` as single-motor 3-phase
-  - `NUM_PUMPS 1`, one state machine
-  - Telemetry schema: `V1/V2/V3 + IL1/IL2/IL3 + avgI + imbalance%`
-  - Protection: per-phase overcurrent, phase imbalance %, phase loss / single-phasing detection, dry-run on average current
-  - MQTT commands: single-motor (no pump index)
-  - Bump to `pump-v4.0.0` (breaking schema change)
-  - Portal: add Adam UI variant (single pump card, 3-phase gauges)
+- **Fix (executed — Option A): Rewrite `pump-controller` as single-motor 3-phase**
+  - ✅ `NUM_PUMPS 1`, one state machine, `Motor` struct
+  - ✅ Protection math extracted to `fl_protection.{h,cpp}` with Unity native unit tests (`projects/fl-tests` + `fl-tests.yml` CI)
+  - ✅ Runtime SIM mode (`fl_sim.{h,cpp}` + `{"command":"SIM",...}`) for bench testing without a meter
+  - ✅ Telemetry: `Va/Vb/Vc + Ia/Ib/Ic + avgI + imb` + `state/cmd/fault/faultI/cf/mode` — aligned with portal single-pump UI contract
+  - ✅ Protection: overcurrent on avg, phase imbalance %, phase loss, dry run, sensor fault, start failure — all delegating to `fl_protection` pure functions
+  - ✅ MQTT commands: no pump index (single-motor), START / STOP / RESET / SET_THRESHOLDS / SET_PROTECTION / SET_DELAYS / SET_SCHEDULE / SET_RURAFLEX / GET_SETTINGS / STATUS
+  - ✅ NVS namespaces `prot_adam` + `sched_adam`
+  - ✅ `FW_VERSION 4.0.0-rc1`, `FW_NAME "ESP32 Adam Single-Motor Controller"`, `HW_TYPE PUMP_ESP32S3`
+  - ✅ Portal Adam-only UI variant (fault banner, avg current + imbalance metrics, imbalance/phase-loss protection controls) on `feature/adam-v4-rc1` branch in fieldlogic-portal
+  - ✅ `build-pump-firmware.yml` rc-aware prerelease detection
+  - ✅ `SITE_VALIDATION.md` checklist written — the gate between rc1 and pump-v4.0.0
+  - ⬜ Hardware SIM test on spare ESP32-S3 (blocked — no spare at base yet)
+  - ⬜ Site validation at Agrico against real SDM630 + real motor (blocked — awaits next site visit)
+  - ⬜ Promote `FW_VERSION 4.0.0-rc1` → `4.0.0`, merge both feature branches, let CI cut `pump-v4.0.0`
 - **Migration cost:** Zero — no Adam devices deployed in the field. Both FL-22F968 and FL-CC8CA0 run Eve.
-- **Notes:** Do this before anyone installs an Adam device. Design intent saved to memory: `adam_eve_design.md`.
+- **Branches / PR:**
+  - Firmware: `Voltageza/fieldlink` → `feature/adam-v4-rc1` (draft PR [#1](https://github.com/Voltageza/fieldlink/pull/1), fl-tests CI green)
+  - Portal: `Voltageza/fieldlogic-portal` → `feature/adam-v4-rc1` (no PR yet; opens in lockstep with firmware at site validation time)
+- **Notes:** Promote this to FIXED only after a passing `SITE_VALIDATION.md` run and the `pump-v4.0.0` stable tag. Until then, status stays IN PROGRESS.
 
 ---
 
