@@ -26,7 +26,7 @@
 /* ================= PROJECT CONFIG ================= */
 
 #define FW_NAME    "ESP32 Eve 3-Pump Controller"
-#define FW_VERSION "1.2.0"
+#define FW_VERSION "1.2.1"
 #define HW_TYPE    "EVE_ESP32S3"
 
 #define NUM_PUMPS 3

@@ -27,6 +27,7 @@ WiFiManager fl_wifiManager;
 
 // Internal state
 static unsigned long lastMqttRetry = 0;
+static unsigned long lastStatusPublish = 0;
 static int mqttConnectFailCount = 0;
 
 // Project callback
@@ -370,6 +371,13 @@ void fl_reconnectMQTT() {
     }
   } else {
     fl_mqttConnected = true;
+
+    // Periodic "online" status publish to clear stale LWT
+    unsigned long now2 = millis();
+    if (now2 - lastStatusPublish > FL_MQTT_STATUS_INTERVAL_MS) {
+      lastStatusPublish = now2;
+      fl_mqtt.publish(fl_TOPIC_STATUS, "online", true);
+    }
 
     // Staleness detection
     unsigned long now = millis();
