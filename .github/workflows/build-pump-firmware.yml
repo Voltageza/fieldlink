@@ -74,6 +74,14 @@ jobs:
           VERSION=$(grep '#define FW_VERSION' "Main Code/projects/pump-controller/src/main.cpp" | cut -d'"' -f2)
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Firmware version: $VERSION"
+          # Mark as prerelease if version contains -rc, -beta, -alpha, etc.
+          if echo "$VERSION" | grep -qE -- '-(rc|beta|alpha|dev)'; then
+            echo "prerelease=true" >> $GITHUB_OUTPUT
+            echo "Prerelease: true"
+          else
+            echo "prerelease=false" >> $GITHUB_OUTPUT
+            echo "Prerelease: false"
+          fi
 
       - name: Rename firmware with version
         run: |
@@ -136,7 +144,9 @@ jobs:
           body: |
             Pump Controller firmware build from commit ${{ github.sha }}
 
-            ## OTA Update (recommended)
+            Prerelease: `${{ steps.version.outputs.prerelease }}`
+
+            ## OTA Update
             ```
             ${{ secrets.SUPABASE_URL }}/storage/v1/object/public/firmware-releases/PUMP_ESP32S3/v${{ steps.version.outputs.version }}.bin
             ```
@@ -145,6 +155,6 @@ jobs:
             Download `pump_firmware_v${{ steps.version.outputs.version }}.bin` and flash via USB.
           files: pump_firmware_v${{ steps.version.outputs.version }}.bin
           draft: false
-          prerelease: false
+          prerelease: ${{ steps.version.outputs.prerelease }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

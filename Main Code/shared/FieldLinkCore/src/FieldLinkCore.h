@@ -7,6 +7,8 @@
 #include "fl_pins.h"
 #include "fl_board.h"
 #include "fl_modbus.h"
+#include "fl_sim.h"
+#include "fl_protection.h"
 #include "fl_storage.h"
 #include "fl_comms.h"
 #include "fl_ota.h"

@@ -1,0 +1,39 @@
+name: FieldLink Native Tests
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'Main Code/projects/fl-tests/**'
+      - 'Main Code/shared/FieldLinkCore/src/fl_protection.*'
+      - '.github/workflows/fl-tests.yml'
+  pull_request:
+    paths:
+      - 'Main Code/projects/fl-tests/**'
+      - 'Main Code/shared/FieldLinkCore/src/fl_protection.*'
+      - '.github/workflows/fl-tests.yml'
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Run native unit tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install PlatformIO
+        run: |
+          python -m pip install --upgrade pip
+          pip install platformio
+
+      - name: Run FieldLinkCore unit tests
+        run: |
+          cd "Main Code/projects/fl-tests"
+          pio test -e native
