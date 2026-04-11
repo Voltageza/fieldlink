@@ -26,7 +26,7 @@
 /* ================= PROJECT CONFIG ================= */
 
 #define FW_NAME    "ESP32 Eve 3-Pump Controller"
-#define FW_VERSION "1.2.1"
+#define FW_VERSION "1.2.2"
 #define HW_TYPE    "EVE_ESP32S3"
 
 #define NUM_PUMPS 3
@@ -959,7 +959,12 @@ void eveMqttCallback(const char* cmd, unsigned int length) {
 
       // Query settings
       if (strcmp(command, "GET_SETTINGS") == 0) {
-        StaticJsonDocument<1024> resp;
+        // static to avoid 2KB stack alloc in MQTT/TLS callback chain (same
+        // pattern as internalMqttCallback in fl_comms.cpp, commit 86ac3e2).
+        // Without static, the handler blew the callback stack and no response
+        // was ever published.
+        static StaticJsonDocument<1024> resp;
+        resp.clear();
         resp["type"] = "settings";
 
         // Per-pump protection + schedule
@@ -990,7 +995,7 @@ void eveMqttCallback(const char* cmd, unsigned int length) {
           resp["current_time"] = timeStr;
         }
 
-        char buf[1024];
+        static char buf[1024];  // static: same reason as resp above
         serializeJson(resp, buf);
         fl_mqtt.publish(fl_TOPIC_TELEMETRY, buf);
         Serial.println("Settings sent via MQTT");
