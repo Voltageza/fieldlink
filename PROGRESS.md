@@ -1,25 +1,24 @@
 # FieldLink Upgrade Progress
 
-## Current Status (2026-03-26)
+## Current Status (2026-04-09)
 
-Both devices still running **Eve v1.1.0**. New firmware **v1.2.0** built and in Supabase Storage, awaiting OTA push.
-Portal has **pump rename** feature live. Per-pump schedule UI on `feature/frontend-fixes` branch (merge after OTA).
+Both devices flashed to **Eve v1.2.1** and confirmed online at home. Portal fleet dashboard fixed — devices stay online in admin fleet view.
 
 | Device | ID | FW | Telegram Group | Notes |
 |--------|----|-----|----------------|-------|
-| EVE #1 | FL-22F968 | v1.1.0 | Agrico 1 (`-5222862641`) | OTA to v1.2.0 pending |
-| EVE #2 | FL-CC8CA0 | v1.1.0 | Agrico 2 (`-5229237038`) | OTA to v1.2.0 pending |
+| EVE #1 | FL-22F968 | **v1.2.1** | Agrico 1 (`-5222862641`) | Online, tested at home |
+| EVE #2 | FL-CC8CA0 | **v1.2.1** | Agrico 2 (`-5229237038`) | Online, tested at home |
 
-**Blocking:** Nothing critical. OTA update when convenient.
+**Blocking:** Site network at Agrico must allow outbound TCP 8883 + UDP 123 before devices can be reinstalled.
 
 ---
 
 ## Next Session (Prioritized)
 
-1. [ ] **OTA update FL-22F968 to Eve v1.2.0** — test one device first, confirm it reconnects and reports v1.2.0
-2. [ ] **OTA update FL-CC8CA0 to Eve v1.2.0** — after first device confirmed stable
-3. [ ] **Merge `feature/frontend-fixes` to main** in fieldlogic-portal (per-pump schedule UI goes live after OTA)
-4. [ ] **Bump to v1.2.1 and push** — includes WiFi auto-reconnect fix (committed locally, not pushed yet)
+1. [ ] **Get site IT to open outbound ports** at Agrico site: **TCP 8883** (HiveMQ MQTT TLS) and **UDP 123** (NTP). Without this, devices will keep dropping offline.
+2. [ ] **Reinstall both devices at Agrico site** — once port 8883 is confirmed open
+3. [ ] **Commit and tag Eve v1.2.1 firmware** — version bump + periodic status publish + auto-reconnect fix. Tag `eve-v1.2.1`, upload to Supabase Storage for future OTA.
+4. [ ] **Merge `feature/frontend-fixes` to main** in fieldlogic-portal (per-pump schedule UI goes live now that devices are on v1.2.1)
 5. [ ] Rename FL-22F968 in portal from "ADAM" to "EVE #1"
 6. [ ] Reset Pump 3 protection on FL-CC8CA0 (garbage defaults: max=33A, dry=33A, oc_delay=23s)
 7. [ ] Connect both devices to 3-phase energy meters and verify pump control
@@ -28,14 +27,35 @@ Portal has **pump rename** feature live. Per-pump schedule UI on `feature/fronte
 
 ---
 
-## Pending Changes (Not Yet Pushed)
+## Pending Changes (Not Yet Pushed — Firmware Repo)
 
-- **WiFi auto-reconnect** — `WiFi.setAutoReconnect(true)` added to `fl_comms.cpp` (committed locally on main, not pushed). Will go into Eve v1.2.1.
-- **Portal `feature/frontend-fixes` branch** — per-pump schedule UI (pump tabs above schedule card, Save All Pumps button). Merge to main after devices are OTA'd to v1.2.0+.
+- **Eve v1.2.1 firmware changes** (all local, not committed/tagged/pushed):
+  - `FW_VERSION` bumped to `1.2.1` in `eve-controller/src/main.cpp`
+  - `WiFi.setAutoReconnect(true)` in `fl_comms.cpp`
+  - Periodic "online" status publish every 60s in `fl_comms.cpp` (clears stale LWT)
+  - `FL_MQTT_STATUS_INTERVAL_MS` constant added to `fl_comms.h`
+- **Portal `feature/frontend-fixes` branch** — per-pump schedule UI (pump tabs above schedule card, Save All Pumps button). Merge to main after confirming devices work at site.
 
 ---
 
 ## Completed
+
+### Session 2026-04-09 (firmware flash + portal fleet fix)
+- [x] **Both devices flashed to Eve v1.2.1** via web UI (`/update`). FL-CC8CA0 flashed first (secrets.h already set), then rebuilt with FL-22F968's chat ID and flashed second. Both confirmed online.
+- [x] **Periodic "online" status publish added** — `fl_comms.cpp` now publishes retained "online" to status topic every 60s (`FL_MQTT_STATUS_INTERVAL_MS`), clearing stale LWT messages automatically.
+- [x] **Portal fleet dashboard fixed** — three bugs found and fixed:
+  1. Fleet page was disconnecting MQTT on navigation (`showPage` hit `disconnectMQTT()` for non-dashboard/device pages). Fixed: added `fleet` to the keep-connected list.
+  2. Fleet page only subscribed to admin's own devices, not all fleet devices. Fixed: added `subscribeFleetDevices()` to subscribe to all `device_registry` entries.
+  3. `lastSeen` was only updated from telemetry, not from status messages. Fixed: "online" status messages now also update `lastSeen`, so the 15-second timeout doesn't falsely show devices as offline.
+  - Portal commits: `ce59d48` (MQTT keep-alive + lastSeen), `55705ca` (fleet subscriptions). Both pushed and deployed via GitHub Pages.
+- [x] **RLS enabled on Supabase** — verified no impact on portal; all queries returning 200 with data.
+
+### Session 2026-04-07/08 (on-site at Agrico)
+- [x] **Root cause identified: site network blocks outbound port 8883** — devices couldn't reach HiveMQ Cloud for MQTT TLS. Confirmed by connecting device to a different WiFi — MQTT connected immediately.
+- [x] **On-site web UI verified working** — both `/config` and main dashboard reachable via device LAN IP. FL-22F968 MQTT status badge confirmed *Connected* after WiFi flap recovered.
+- [x] **Captive portal behavior documented** — WiFiManager captive portal ONLY opens at boot if `autoConnect()` fails (180s timeout). Does NOT open during runtime. To force: wipe NVS (`pio run -t erase`) or power-cycle while saved AP is unreachable.
+- [x] **Required outbound ports documented** — TCP 8883, UDP 123, TCP 443, UDP 53.
+- [x] **Laptop prepared for site work** — VS Code + PlatformIO; ESP32-S3 uses native USB-CDC.
 
 ### Session 2026-03-26
 - [x] **User Jan-Hendrik verified** — email confirmed via SQL (`UPDATE auth.users SET email_confirmed_at = now()`), password set via `crypt()` in Supabase SQL Editor
@@ -116,6 +136,20 @@ Portal has **pump rename** feature live. Per-pump schedule UI on `feature/fronte
 - [x] Supabase Storage for firmware OTA (`firmware-releases/EVE_ESP32S3/`, `PUMP_ESP32S3/`)
 - [x] HiveMQ Cloud MQTT broker (TLS 8883)
 - [x] Telegram Bot (@FieldLogicAlertsBot) — direct API from ESP32
+
+---
+
+## Required Outbound Network Ports (for site firewalls)
+
+| Port | Proto | Purpose | Destination |
+|------|-------|---------|-------------|
+| 8883 | TCP | MQTT TLS to HiveMQ Cloud | `*.s1.eu.hivemq.cloud` |
+| 443  | TCP | Telegram Bot API (fault alerts) | `api.telegram.org` |
+| 443  | TCP | OTA firmware downloads | `*.supabase.co` |
+| 53   | UDP | DNS | router / 8.8.8.8 / 1.1.1.1 |
+| 123  | UDP | NTP (required for TLS cert validation!) | `pool.ntp.org` |
+
+**Port 8883 and UDP 123 are the most commonly blocked** on locked-down site networks. If either is blocked, MQTT will silently fail (TLS handshake failure from clock drift looks identical to port block).
 
 ---
 
