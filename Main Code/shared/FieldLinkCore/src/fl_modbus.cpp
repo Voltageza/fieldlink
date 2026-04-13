@@ -1,5 +1,6 @@
 #include "fl_modbus.h"
 #include "fl_pins.h"
+#include "fl_sim.h"
 
 float fl_Va = 0, fl_Vb = 0, fl_Vc = 0;
 float fl_Ia = 0, fl_Ib = 0, fl_Ic = 0;
@@ -42,6 +43,16 @@ void fl_initModbus() {
 }
 
 bool fl_readSensors() {
+  // Sim mode short-circuits the real Modbus transaction. fl_Va/Vb/Vc +
+  // fl_Ia/Ib/Ic are driven from fl_simSetPhases() (via MQTT SIM command
+  // in most cases). Keep the sensor marked online so project code treats
+  // sim data as valid.
+  if (fl_simMode) {
+    fl_sensorOnline = true;
+    fl_modbusFailCount = 0;
+    return true;
+  }
+
   // Read voltage (0x0000-0x0005) and current (0x0006-0x000B) in one transaction
   uint8_t result = fl_modbusNode.readInputRegisters(0x0000, 12);
 

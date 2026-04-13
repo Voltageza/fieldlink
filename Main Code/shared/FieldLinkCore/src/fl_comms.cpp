@@ -2,6 +2,8 @@
 #include "fl_pins.h"
 #include "fl_storage.h"
 #include "fl_ota.h"
+#include "fl_sim.h"
+#include "fl_modbus.h"
 #include <ArduinoJson.h>
 
 // Network clients
@@ -78,6 +80,32 @@ static void internalMqttCallback(char* topic, byte* payload, unsigned int length
         fl_performRemoteFirmwareUpdate(firmwareUrl);
       } else {
         Serial.println("UPDATE_FIRMWARE command missing 'url' parameter");
+      }
+      return;  // Handled internally
+    }
+
+    // SIM command — bench testing without a real meter.
+    //   {"command":"SIM","enable":true|false}
+    //   {"command":"SIM","V1":..,"V2":..,"V3":..,"I1":..,"I2":..,"I3":..}
+    // Any subset of V1..I3 may be provided; missing fields retain their
+    // current value. Providing values auto-enables sim mode.
+    if (command && strcmp(command, "SIM") == 0) {
+      if (doc.containsKey("enable")) {
+        fl_setSimMode(doc["enable"].as<bool>());
+      }
+      bool hasValues = doc.containsKey("V1") || doc.containsKey("V2") || doc.containsKey("V3") ||
+                       doc.containsKey("I1") || doc.containsKey("I2") || doc.containsKey("I3");
+      if (hasValues) {
+        if (!fl_simMode) fl_setSimMode(true);
+        float V1 = doc["V1"] | fl_Va;
+        float V2 = doc["V2"] | fl_Vb;
+        float V3 = doc["V3"] | fl_Vc;
+        float I1 = doc["I1"] | fl_Ia;
+        float I2 = doc["I2"] | fl_Ib;
+        float I3 = doc["I3"] | fl_Ic;
+        fl_simSetPhases(V1, V2, V3, I1, I2, I3);
+        Serial.printf("[SIM] Phases set: V=%.1f/%.1f/%.1f I=%.2f/%.2f/%.2f\n",
+                      V1, V2, V3, I1, I2, I3);
       }
       return;  // Handled internally
     }
