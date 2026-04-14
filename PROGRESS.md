@@ -2,14 +2,14 @@
 
 ## Current Status (2026-04-14)
 
-Both Eve devices running **v1.2.3** with all safety fixes, Modbus skip, deferred GET_SETTINGS, HTTPS OTA support, filtered Telegram notifications, larger JSON buffer, and clean production logs. Both verified via device checklist.
+Both Eve devices running **v1.2.3** production firmware. All safety fixes applied. Hardware I/O verified on both devices via test mode. Portal debug logs cleaned. Pump-controller project updated to v3.2.0 with same fixes.
 
 | Device | ID | FW | Telegram Group | Notes |
 |--------|----|-----|----------------|-------|
-| EVE #1 | FL-22F968 | **v1.2.3** (commit `0094958`) | Agrico 1 (`-5222862641`) | **At base.** All fixes applied. GET_SETTINGS <1s. Fully verified. |
-| EVE #2 | FL-CC8CA0 | **v1.2.3** (commit `0094958`) | Agrico 2 (`-5229237038`) | **At base.** GET_SETTINGS 0.5s. Fully verified. Pump 2/3 protection settings need reset via portal. |
+| EVE #1 | FL-22F968 | **v1.2.3** (production) | Agrico 1 (`-5222862641`) | **At base.** I/O tested — all 6 relays verified (3 contactors + 3 fault alarms). Renamed to "EVE #1" in Supabase. |
+| EVE #2 | FL-CC8CA0 | **v1.2.3** (production) | Agrico 2 (`-5229237038`) | **At base.** I/O tested — all 6 relays verified. Protection reset to sensible defaults. |
 
-**No blockers.** Both devices operational. Ready for field deployment after Pump 2/3 settings cleanup on FL-CC8CA0.
+**No blockers.** Both devices ready for field deployment. Raspberry Pi 3 planned for remote site management.
 
 ---
 
@@ -17,24 +17,29 @@ Both Eve devices running **v1.2.3** with all safety fixes, Modbus skip, deferred
 
 1. [x] ~~**USB flash FL-CC8CA0**~~ — Done. Flashed via COM3, verified with checklist.
 2. [x] ~~**Commit + push OTA fix**~~ — Done. Commit `9a757e3`.
-3. [x] ~~**Author + ship Eve v1.2.3**~~ — Done. JSON buffer 256→512, removed debug logs. Commit `0094958`. Both devices flashed and verified.
-4. [x] ~~**Reset Pump 2/3 protection on FL-CC8CA0**~~ — All pumps now: oc_en=True, dry_en=True, max_I=10, dry_I=1, delays=5s.
-5. [x] ~~**Rename FL-22F968**~~ — Renamed from "Booster Pompe" to "EVE #1" in Supabase.
-6. [x] ~~**Apply fixes to pump-controller**~~ — v3.2.0 with deferred publish, notification filter, contactor enforcement, schedule tracking. Commit `08b77db`.
+3. [x] ~~**Author + ship Eve v1.2.3**~~ — Done. JSON buffer 256→512, removed debug logs. Commit `0094958`.
+4. [x] ~~**Reset Pump 2/3 protection on FL-CC8CA0**~~ — All pumps: oc_en=True, dry_en=True, max_I=10, dry_I=1, delays=5s.
+5. [x] ~~**Rename FL-22F968**~~ — Renamed to "EVE #1" in Supabase.
+6. [x] ~~**Apply fixes to pump-controller**~~ — v3.2.0. Commit `08b77db`.
 7. [x] ~~**Remove portal debug logs**~~ — `[MQTT-IN]` removed. Commit `a0fbd2d` (portal repo).
-7. [ ] Connect both devices to 3-phase energy meters and verify pump control
-8. [ ] Test per-pump START/STOP/RESET via portal
-9. [ ] Add customers to their respective Telegram groups
-10. [ ] Remove debug logging from portal (`[MQTT-IN]` logs) before production
+8. [x] ~~**Hardware I/O test mode**~~ — `feature/io-test` branch. TEST_DO, TEST_DI, TEST_PUMP_SIM commands. Interactive CLI `tools/io_test.py`. All 6 relays verified on both devices.
+9. [ ] **Setup Raspberry Pi 3 for remote site management** — SSH + Tailscale + PlatformIO + serial monitor. One Eve device connected via USB for remote flashing.
+10. [ ] Connect both devices to 3-phase energy meters and verify pump control
+11. [ ] Test per-pump START/STOP/RESET via portal (with real energy meter)
+12. [ ] Add customers to their respective Telegram groups
 
 ---
 
 ## Pending Changes (Not Yet Pushed)
 
 ### All firmware committed and pushed (2026-04-14)
-- **Firmware** (`43a12f0`): Modbus offline skip, safety fixes (contactor enforcement, stale sensor zeroing, schedule tracking), deferred GET_SETTINGS + Telegram, notification filter, loop timing debug
-- **Portal** (`f970231`): MQTT reconnect subscription, live device time, notification filter, debug logging
-- **Tool** (`43a12f0`): `tools/device_checklist.py` — automated device health checker
+- **Eve v1.2.3** (`0094958`): Safety fixes, Modbus skip, deferred publish, notification filter, JSON buffer 512, clean logs
+- **OTA fix** (`9a757e3`): WiFiClientSecure for HTTPS firmware downloads
+- **Pump-controller v3.2.0** (`08b77db`): Same safety fixes ported from Eve
+- **Portal** (`a0fbd2d`): MQTT reconnect, live device time, notification filter, debug logs removed
+
+### Feature branches (not merged to main)
+- **`feature/io-test`** — I/O test mode for hardware verification. TEST_DO, TEST_DI, TEST_PUMP_SIM MQTT commands + `tools/io_test.py` CLI. Safe to merge later or keep separate.
 
 ### Diagnostic scripts (keep local)
 - `mqtt_cmd_diagnose.py`, `mqtt_get_settings_probe.py`, `mqtt_ota_watch.py`, `mqtt_reset_probe.py`, `mqtt_ota_eve.py`
@@ -42,6 +47,19 @@ Both Eve devices running **v1.2.3** with all safety fixes, Modbus skip, deferred
 ---
 
 ## Completed
+
+### Session 2026-04-14 (I/O test mode, production cleanup, Pi planning)
+- [x] **I/O test mode created** — `feature/io-test` branch with MQTT commands: `TEST_DO` (cycle/individual relay control), `TEST_DI` (read inputs), `TEST_DI_MONITOR` (continuous change reporting), `TEST_PUMP_SIM` (fake sensor data to bypass SENSOR_FAULT), `TEST_ALL_OFF` (safety kill switch)
+- [x] **Interactive test CLI** — `tools/io_test.py` with telemetry suppression, pump start/stop/reset, and sim control
+- [x] **Bug fix: sim data overwritten by Modbus** — `fl_readSensors()` was called after sim override, zeroing values. Fixed by skipping Modbus reads when `testSimEnabled=true`
+- [x] **Hardware I/O verified on both devices** — all 6 relays confirmed working (3 contactors DO0-DO2, 3 fault alarms DO4-DO6) on FL-22F968 and FL-CC8CA0
+- [x] **Both devices flashed back to production v1.2.3** — `main` branch, no test code
+- [x] **Schedules reset** to 06:00-18:00 on both devices after testing
+- [x] **Protection settings cleaned up** — FL-CC8CA0 all pumps reset to sensible defaults via MQTT
+- [x] **FL-22F968 renamed** to "EVE #1" in Supabase
+- [x] **Portal debug logs removed** — `[MQTT-IN]` console.log removed, commit `a0fbd2d`
+- [x] **Pump-controller v3.2.0** — all Eve safety fixes ported (deferred publish, notification filter, contactor enforcement, schedule tracking), commit `08b77db`
+- [x] **Raspberry Pi 3 planned** — remote site management via SSH + Tailscale, USB serial to one Eve device for remote flashing/monitoring
 
 ### Session 2026-04-13/14 (Modbus root cause, safety fixes, code review, OTA attempt)
 - [x] **Root cause: Modbus timeout blocking main loop** — `readInputRegisters()` 2000ms timeout with no meter connected. Loop stuck at 2s cycles. Fixed by skipping reads when sensor offline, retrying every 30s. Loop now ~10ms.
@@ -218,14 +236,19 @@ fieldlogic.co.za (GitHub Pages portal) → Supabase (PostgreSQL + Auth + Storage
 - EPRO - FieldLogic - Agrico 2 → FL-CC8CA0 (chat_id: -5229237038)
 
 **Firmware storage:**
-- `firmware-releases/EVE_ESP32S3/v1.2.0.bin` (ready for OTA)
-- `firmware-releases/PUMP_ESP32S3/v3.1.0.bin` (ready for OTA)
+- `firmware-releases/EVE_ESP32S3/v1.2.3.bin` (current production, CI auto-built)
+- `firmware-releases/PUMP_ESP32S3/v3.2.0.bin` (current, CI auto-built)
 
-**OTA command (Eve v1.2.0):**
+**OTA command (Eve v1.2.3):**
 ```json
-{"command": "UPDATE_FIRMWARE", "url": "https://einfhsixzxfnbppzydcn.supabase.co/storage/v1/object/public/firmware-releases/EVE_ESP32S3/v1.2.0.bin"}
+{"command": "UPDATE_FIRMWARE", "url": "https://einfhsixzxfnbppzydcn.supabase.co/storage/v1/object/public/firmware-releases/EVE_ESP32S3/v1.2.3.bin"}
 ```
-Note: OTA requires WiFi (W5500 Ethernet can't do TLS downloads)
+Note: OTA requires WiFi (W5500 Ethernet can't do TLS downloads). v1.2.3 uses WiFiClientSecure for HTTPS.
+
+**Diagnostic tools:**
+- `tools/device_checklist.py` — automated health check (`--all` for both devices)
+- `tools/io_test.py` — interactive I/O test (requires `feature/io-test` firmware)
+- `mqtt_ota_eve.py` — one-shot OTA trigger (`python mqtt_ota_eve.py FL-22F968 1.2.3`)
 
 ---
 
