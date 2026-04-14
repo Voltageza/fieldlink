@@ -18,9 +18,10 @@ Both Eve devices running **v1.2.3** with all safety fixes, Modbus skip, deferred
 1. [x] ~~**USB flash FL-CC8CA0**~~ — Done. Flashed via COM3, verified with checklist.
 2. [x] ~~**Commit + push OTA fix**~~ — Done. Commit `9a757e3`.
 3. [x] ~~**Author + ship Eve v1.2.3**~~ — Done. JSON buffer 256→512, removed debug logs. Commit `0094958`. Both devices flashed and verified.
-4. [ ] **Reset Pump 2/3 protection on FL-CC8CA0** — garbage defaults (P2: oc=off, dry=off, max_I=33; P3: max_I=33, dry_I=33). Set via portal.
-5. [ ] Rename FL-22F968 in portal from "ADAM" to "EVE #1"
-6. [ ] Apply deferred publish + Modbus skip fixes to pump-controller project (Adam devices)
+4. [x] ~~**Reset Pump 2/3 protection on FL-CC8CA0**~~ — All pumps now: oc_en=True, dry_en=True, max_I=10, dry_I=1, delays=5s.
+5. [x] ~~**Rename FL-22F968**~~ — Renamed from "Booster Pompe" to "EVE #1" in Supabase.
+6. [x] ~~**Apply fixes to pump-controller**~~ — v3.2.0 with deferred publish, notification filter, contactor enforcement, schedule tracking. Commit `08b77db`.
+7. [x] ~~**Remove portal debug logs**~~ — `[MQTT-IN]` removed. Commit `a0fbd2d` (portal repo).
 7. [ ] Connect both devices to 3-phase energy meters and verify pump control
 8. [ ] Test per-pump START/STOP/RESET via portal
 9. [ ] Add customers to their respective Telegram groups
