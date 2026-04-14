@@ -26,7 +26,7 @@
 /* ================= PROJECT CONFIG ================= */
 
 #define FW_NAME    "ESP32 Pump Controller"
-#define FW_VERSION "3.1.0"
+#define FW_VERSION "3.2.0"
 #define HW_TYPE    "PUMP_ESP32S3"
 
 #define NUM_PUMPS 3
@@ -446,6 +446,19 @@ void savePumpSchedule(Pump& p);
 void loadRuraflexConfig();
 void saveRuraflexConfig();
 bool isWithinSchedule(const Pump& p);
+void publishSettings();
+
+// Deferred publish flag (set in MQTT callback, executed in loop)
+volatile bool pendingSettingsPublish = false;
+
+// Deferred Telegram notifications (one per loop iteration)
+struct PendingNotification {
+  int pump;
+  char faultType[20];
+  float current;
+  bool pending;
+};
+static PendingNotification pendingNotifications[3] = {};
 
 /* ================= PUMP INITIALIZATION ================= */
 
@@ -528,7 +541,17 @@ void triggerFault(Pump& p, FaultType type) {
     fl_setDO(p.doFaultAlarm, true);
 
     Serial.printf("!!! PUMP %d FAULT: %s (I=%.2fA) !!!\n", p.id, faultTypeToString(type), p.faultCurrent);
-    fl_sendFaultNotification(p.id, faultTypeToString(type), p.faultCurrent);
+
+    // Only send Telegram for protection faults (not SENSOR_FAULT)
+    if (type == OVERCURRENT || type == DRY_RUN) {
+      int idx = p.id - 1;
+      if (idx >= 0 && idx < NUM_PUMPS) {
+        pendingNotifications[idx].pump = p.id;
+        strncpy(pendingNotifications[idx].faultType, faultTypeToString(type), sizeof(pendingNotifications[idx].faultType) - 1);
+        pendingNotifications[idx].current = p.faultCurrent;
+        pendingNotifications[idx].pending = true;
+      }
+    }
   }
 }
 
@@ -957,43 +980,9 @@ void pumpMqttCallback(const char* cmd, unsigned int length) {
         return;
       }
 
-      // Query settings
+      // Query settings — defer publish to loop() to avoid TLS stack issues
       if (strcmp(command, "GET_SETTINGS") == 0) {
-        StaticJsonDocument<1024> resp;
-        resp["type"] = "settings";
-
-        // Per-pump protection + schedule
-        for (int i = 0; i < NUM_PUMPS; i++) {
-          char key[8];
-          snprintf(key, sizeof(key), "p%d", i + 1);
-          JsonObject pObj = resp.createNestedObject(key);
-          pObj["overcurrent_enabled"] = pumps[i].overcurrentEnabled;
-          pObj["dryrun_enabled"] = pumps[i].dryRunEnabled;
-          pObj["max_current"] = pumps[i].maxCurrentThreshold;
-          pObj["dry_current"] = pumps[i].dryCurrentThreshold;
-          pObj["overcurrent_delay_s"] = pumps[i].overcurrentDelayS;
-          pObj["dryrun_delay_s"] = pumps[i].dryrunDelayS;
-          pObj["sch_en"] = pumps[i].scheduleEnabled;
-          pObj["sch_sH"] = pumps[i].scheduleStartHour;
-          pObj["sch_sM"] = pumps[i].scheduleStartMinute;
-          pObj["sch_eH"] = pumps[i].scheduleEndHour;
-          pObj["sch_eM"] = pumps[i].scheduleEndMinute;
-          pObj["sch_days"] = pumps[i].scheduleDays;
-        }
-
-        resp["ruraflex_enabled"] = ruraflexEnabled;
-
-        struct tm timeinfo;
-        if (getLocalTime(&timeinfo, 10)) {
-          char timeStr[9];
-          strftime(timeStr, sizeof(timeStr), "%H:%M:%S", &timeinfo);
-          resp["current_time"] = timeStr;
-        }
-
-        char buf[1024];
-        serializeJson(resp, buf);
-        fl_mqtt.publish(fl_TOPIC_TELEMETRY, buf);
-        Serial.println("Settings sent via MQTT");
+        pendingSettingsPublish = true;
         return;
       }
 
@@ -1258,6 +1247,46 @@ void setup() {
   Serial.println("Setup complete. Entering main loop...");
 }
 
+/* ================= DEFERRED SETTINGS PUBLISH ================= */
+
+void publishSettings() {
+  static StaticJsonDocument<1024> resp;
+  resp.clear();
+  resp["type"] = "settings";
+
+  for (int i = 0; i < NUM_PUMPS; i++) {
+    char key[8];
+    snprintf(key, sizeof(key), "p%d", i + 1);
+    JsonObject pObj = resp.createNestedObject(key);
+    pObj["overcurrent_enabled"] = pumps[i].overcurrentEnabled;
+    pObj["dryrun_enabled"] = pumps[i].dryRunEnabled;
+    pObj["max_current"] = pumps[i].maxCurrentThreshold;
+    pObj["dry_current"] = pumps[i].dryCurrentThreshold;
+    pObj["overcurrent_delay_s"] = pumps[i].overcurrentDelayS;
+    pObj["dryrun_delay_s"] = pumps[i].dryrunDelayS;
+    pObj["sch_en"] = pumps[i].scheduleEnabled;
+    pObj["sch_sH"] = pumps[i].scheduleStartHour;
+    pObj["sch_sM"] = pumps[i].scheduleStartMinute;
+    pObj["sch_eH"] = pumps[i].scheduleEndHour;
+    pObj["sch_eM"] = pumps[i].scheduleEndMinute;
+    pObj["sch_days"] = pumps[i].scheduleDays;
+  }
+
+  resp["ruraflex_enabled"] = ruraflexEnabled;
+
+  struct tm timeinfo;
+  if (getLocalTime(&timeinfo, 10)) {
+    char timeStr[9];
+    strftime(timeStr, sizeof(timeStr), "%H:%M:%S", &timeinfo);
+    resp["current_time"] = timeStr;
+  }
+
+  char buf[1024];
+  serializeJson(resp, buf);
+  fl_mqtt.publish(fl_TOPIC_TELEMETRY, buf);
+  Serial.println("Settings published (deferred)");
+}
+
 /* ================= LOOP ================= */
 
 void loop() {
@@ -1265,6 +1294,25 @@ void loop() {
 
   // Library tick: OTA, serial, MQTT reconnect+loop, DI read
   fl_tick();
+
+  // Deferred settings publish (cannot publish reliably inside MQTT callback)
+  if (pendingSettingsPublish) {
+    pendingSettingsPublish = false;
+    publishSettings();
+  }
+
+  // Deferred Telegram notifications — send one per loop, yield to settings
+  if (!pendingSettingsPublish) {
+    for (int i = 0; i < NUM_PUMPS; i++) {
+      if (pendingNotifications[i].pending) {
+        pendingNotifications[i].pending = false;
+        fl_sendFaultNotification(pendingNotifications[i].pump,
+                                 pendingNotifications[i].faultType,
+                                 pendingNotifications[i].current);
+        break;  // Only one per loop iteration
+      }
+    }
+  }
 
   // ===== CONTACTOR FEEDBACK (DI1-DI3) =====
   for (int i = 0; i < NUM_PUMPS; i++) {
@@ -1293,6 +1341,9 @@ void loop() {
     for (int i = 0; i < NUM_PUMPS; i++) {
       Pump& p = pumps[i];
       bool scheduleAllows = isWithinSchedule(p);
+
+      // Always track schedule state (even if schedule disabled) to prevent
+      // stale wasWithinSchedule causing unexpected auto-start on toggle
       if (p.scheduleEnabled || ruraflexEnabled) {
         if (scheduleAllows && !p.wasWithinSchedule) {
           if (p.state != FAULT) {
@@ -1304,16 +1355,16 @@ void loop() {
           p.startCommand = false;
           Serial.printf("Schedule: Pump %d outside allowed hours\n", p.id);
         }
-        p.wasWithinSchedule = scheduleAllows;
       }
+      p.wasWithinSchedule = scheduleAllows;
     }
 
-    // Update DO outputs per pump
+    // Enforce DO outputs every cycle (not just on change)
     for (int i = 0; i < NUM_PUMPS; i++) {
       Pump& p = pumps[i];
-      bool desiredDO = (p.startCommand && p.state != FAULT && isWithinSchedule(p));
+      bool desiredDO = (p.startCommand && p.state != FAULT && p.wasWithinSchedule);
+      fl_setDO(p.doContactor, desiredDO);
       if (desiredDO != p.lastDOState) {
-        fl_setDO(p.doContactor, desiredDO);
         Serial.printf("Pump %d contactor: %s\n", p.id, desiredDO ? "ON" : "OFF");
         p.lastDOState = desiredDO;
       }
