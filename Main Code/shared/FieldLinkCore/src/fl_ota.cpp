@@ -2,6 +2,7 @@
 #include "fl_comms.h"
 #include "fl_storage.h"
 #include <HTTPClient.h>
+#include <WiFiClientSecure.h>
 #include <Update.h>
 #include <ArduinoOTA.h>
 
@@ -35,8 +36,18 @@ void fl_performRemoteFirmwareUpdate(const char* firmwareUrl) {
   Serial.printf("URL: %s\n", firmwareUrl);
   Serial.println("===========================================");
 
+  // Disconnect MQTT first — free up TLS memory and avoid conflicts
+  // with two concurrent TLS connections
+  fl_mqtt.disconnect();
+  fl_mqttConnected = false;
+  delay(100);
+
   HTTPClient http;
-  http.begin(firmwareUrl);
+  // Use WiFiClientSecure for HTTPS firmware URLs (e.g. Supabase Storage)
+  static WiFiClientSecure otaClient;
+  otaClient.setInsecure();  // Skip cert validation for OTA
+  http.begin(otaClient, firmwareUrl);
+  http.setTimeout(30000);  // 30s timeout for large downloads
 
   int httpCode = http.GET();
 
