@@ -42,6 +42,17 @@ void fl_initModbus() {
 }
 
 bool fl_readSensors() {
+  // When sensor is offline, only retry every 30 seconds to avoid
+  // blocking the loop with 2s Modbus timeouts on every read
+  static unsigned long lastRetryTime = 0;
+  if (!fl_sensorOnline && fl_modbusFailCount >= FL_MAX_MODBUS_FAILURES) {
+    if (millis() - lastRetryTime < 30000) {
+      return false;  // Skip — sensor offline, not time to retry yet
+    }
+    lastRetryTime = millis();
+    Serial.println("Retrying Modbus sensor...");
+  }
+
   // Read voltage (0x0000-0x0005) and current (0x0006-0x000B) in one transaction
   uint8_t result = fl_modbusNode.readInputRegisters(0x0000, 12);
 
@@ -51,6 +62,9 @@ bool fl_readSensors() {
       if (fl_sensorOnline) {
         Serial.println("ERROR: Modbus sensor offline!");
         fl_sensorOnline = false;
+        // Zero out readings so stale values don't persist
+        fl_Va = 0; fl_Vb = 0; fl_Vc = 0;
+        fl_Ia = 0; fl_Ib = 0; fl_Ic = 0;
       }
     }
     return false;
@@ -72,16 +86,25 @@ bool fl_readSensors() {
   float newIb = registersToFloat(fl_modbusNode.getResponseBuffer(8), fl_modbusNode.getResponseBuffer(9));
   float newIc = registersToFloat(fl_modbusNode.getResponseBuffer(10), fl_modbusNode.getResponseBuffer(11));
 
-  // Validate voltages
+  // Validate voltages — reset to 0 on failure so stale values
+  // don't persist (prevents system thinking power is present when it's not)
   if (isValidVoltage(newVa) && isValidVoltage(newVb) && isValidVoltage(newVc)) {
     fl_Va = newVa;
     fl_Vb = newVb;
     fl_Vc = newVc;
+  } else {
+    Serial.printf("WARNING: Invalid voltage reading: Va=%.1f Vb=%.1f Vc=%.1f\n", newVa, newVb, newVc);
+    fl_Va = 0;
+    fl_Vb = 0;
+    fl_Vc = 0;
   }
 
-  // Validate currents
+  // Validate currents — reset to 0 on failure
   if (!isValidCurrent(newIa) || !isValidCurrent(newIb) || !isValidCurrent(newIc)) {
     Serial.printf("WARNING: Invalid current reading: Ia=%.2f Ib=%.2f Ic=%.2f\n", newIa, newIb, newIc);
+    fl_Ia = 0;
+    fl_Ib = 0;
+    fl_Ic = 0;
     return false;
   }
 

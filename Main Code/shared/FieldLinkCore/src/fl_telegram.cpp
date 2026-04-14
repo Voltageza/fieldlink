@@ -44,13 +44,16 @@ void fl_sendFaultNotification(int pump, const char* faultType, float current) {
   HTTPClient http;
   http.begin(url);
   http.addHeader("Content-Type", "application/json");
+  http.setTimeout(3000);  // 3s max — don't block the main loop
 
+  unsigned long t0 = millis();
   int httpCode = http.POST(payload);
+  unsigned long elapsed = millis() - t0;
 
   if (httpCode > 0) {
-    Serial.printf("Telegram sent, response: %d\n", httpCode);
+    Serial.printf("Telegram sent, response: %d (%lums)\n", httpCode, elapsed);
   } else {
-    Serial.printf("Telegram failed: %s\n", http.errorToString(httpCode).c_str());
+    Serial.printf("Telegram failed: %s (%lums)\n", http.errorToString(httpCode).c_str(), elapsed);
   }
 
   http.end();

@@ -437,6 +437,15 @@ void triggerFault(Pump& p, FaultType type);
 void resetFault(Pump& p);
 const char* faultTypeToString(FaultType ft);
 const char* stateToString(PumpState s);
+
+// Deferred Telegram notifications — avoid blocking the main loop
+struct PendingNotification {
+  int pump;
+  char faultType[20];
+  float current;
+  bool pending;
+};
+static PendingNotification pendingNotifications[3] = {};
 PumpState evaluatePumpState(Pump& p);
 void updatePumpState(Pump& p);
 void loadPumpProtection(Pump& p);
@@ -528,7 +537,18 @@ void triggerFault(Pump& p, FaultType type) {
     fl_setDO(p.doFaultAlarm, true);
 
     Serial.printf("!!! PUMP %d FAULT: %s (I=%.2fA) !!!\n", p.id, faultTypeToString(type), p.faultCurrent);
-    fl_sendFaultNotification(p.id, faultTypeToString(type), p.faultCurrent);
+    // Only send Telegram for protection faults (overcurrent/dry-run) —
+    // these mean a pump was running and something went wrong.
+    // SENSOR_FAULT is a system status (e.g. no meter at boot), not actionable.
+    if (type == OVERCURRENT || type == DRY_RUN) {
+      int idx = p.id - 1;
+      if (idx >= 0 && idx < 3) {
+        pendingNotifications[idx].pump = p.id;
+        strncpy(pendingNotifications[idx].faultType, faultTypeToString(type), sizeof(pendingNotifications[idx].faultType) - 1);
+        pendingNotifications[idx].current = p.faultCurrent;
+        pendingNotifications[idx].pending = true;
+      }
+    }
   }
 }
 
@@ -789,6 +809,47 @@ bool isWithinSchedule(const Pump& p) {
 
 /* ================= MQTT CALLBACK ================= */
 
+// Deferred settings publish — set in callback, executed in loop()
+static volatile bool pendingSettingsPublish = false;
+
+void publishSettings() {
+  static StaticJsonDocument<1024> resp;
+  resp.clear();
+  resp["type"] = "settings";
+
+  for (int i = 0; i < NUM_PUMPS; i++) {
+    char key[8];
+    snprintf(key, sizeof(key), "p%d", i + 1);
+    JsonObject pObj = resp.createNestedObject(key);
+    pObj["overcurrent_enabled"] = pumps[i].overcurrentEnabled;
+    pObj["dryrun_enabled"] = pumps[i].dryRunEnabled;
+    pObj["max_current"] = pumps[i].maxCurrentThreshold;
+    pObj["dry_current"] = pumps[i].dryCurrentThreshold;
+    pObj["overcurrent_delay_s"] = pumps[i].overcurrentDelayS;
+    pObj["dryrun_delay_s"] = pumps[i].dryrunDelayS;
+    pObj["sch_en"] = pumps[i].scheduleEnabled;
+    pObj["sch_sH"] = pumps[i].scheduleStartHour;
+    pObj["sch_sM"] = pumps[i].scheduleStartMinute;
+    pObj["sch_eH"] = pumps[i].scheduleEndHour;
+    pObj["sch_eM"] = pumps[i].scheduleEndMinute;
+    pObj["sch_days"] = pumps[i].scheduleDays;
+  }
+
+  resp["ruraflex_enabled"] = ruraflexEnabled;
+
+  struct tm timeinfo;
+  if (getLocalTime(&timeinfo, 10)) {
+    char timeStr[9];
+    strftime(timeStr, sizeof(timeStr), "%H:%M:%S", &timeinfo);
+    resp["current_time"] = timeStr;
+  }
+
+  static char buf[1024];
+  size_t len = serializeJson(resp, buf);
+  bool ok = fl_mqtt.publish(fl_TOPIC_TELEMETRY, buf);
+  Serial.printf("Settings published (%d bytes, %s)\n", len, ok ? "OK" : "FAILED");
+}
+
 void eveMqttCallback(const char* cmd, unsigned int length) {
   // Handle UPDATE_FIRMWARE notification (library handles actual update)
   {
@@ -957,48 +1018,11 @@ void eveMqttCallback(const char* cmd, unsigned int length) {
         return;
       }
 
-      // Query settings
+      // Query settings — defer to main loop (publishing inside MQTT callback
+      // is unreliable with PubSubClient + TLS)
       if (strcmp(command, "GET_SETTINGS") == 0) {
-        // static to avoid 2KB stack alloc in MQTT/TLS callback chain (same
-        // pattern as internalMqttCallback in fl_comms.cpp, commit 86ac3e2).
-        // Without static, the handler blew the callback stack and no response
-        // was ever published.
-        static StaticJsonDocument<1024> resp;
-        resp.clear();
-        resp["type"] = "settings";
-
-        // Per-pump protection + schedule
-        for (int i = 0; i < NUM_PUMPS; i++) {
-          char key[8];
-          snprintf(key, sizeof(key), "p%d", i + 1);
-          JsonObject pObj = resp.createNestedObject(key);
-          pObj["overcurrent_enabled"] = pumps[i].overcurrentEnabled;
-          pObj["dryrun_enabled"] = pumps[i].dryRunEnabled;
-          pObj["max_current"] = pumps[i].maxCurrentThreshold;
-          pObj["dry_current"] = pumps[i].dryCurrentThreshold;
-          pObj["overcurrent_delay_s"] = pumps[i].overcurrentDelayS;
-          pObj["dryrun_delay_s"] = pumps[i].dryrunDelayS;
-          pObj["sch_en"] = pumps[i].scheduleEnabled;
-          pObj["sch_sH"] = pumps[i].scheduleStartHour;
-          pObj["sch_sM"] = pumps[i].scheduleStartMinute;
-          pObj["sch_eH"] = pumps[i].scheduleEndHour;
-          pObj["sch_eM"] = pumps[i].scheduleEndMinute;
-          pObj["sch_days"] = pumps[i].scheduleDays;
-        }
-
-        resp["ruraflex_enabled"] = ruraflexEnabled;
-
-        struct tm timeinfo;
-        if (getLocalTime(&timeinfo, 10)) {
-          char timeStr[9];
-          strftime(timeStr, sizeof(timeStr), "%H:%M:%S", &timeinfo);
-          resp["current_time"] = timeStr;
-        }
-
-        static char buf[1024];  // static: same reason as resp above
-        serializeJson(resp, buf);
-        fl_mqtt.publish(fl_TOPIC_TELEMETRY, buf);
-        Serial.println("Settings sent via MQTT");
+        pendingSettingsPublish = true;
+        Serial.println("GET_SETTINGS queued for main loop");
         return;
       }
 
@@ -1269,8 +1293,40 @@ void setup() {
 void loop() {
   unsigned long now = millis();
 
+  // Debug: detect slow loops (>1s means something is blocking)
+  static unsigned long lastLoopTime = 0;
+  if (lastLoopTime > 0 && (now - lastLoopTime) > 1000) {
+    Serial.printf("*** SLOW LOOP: %lums since last iteration ***\n", now - lastLoopTime);
+  }
+  lastLoopTime = now;
+
   // Library tick: OTA, serial, MQTT reconnect+loop, DI read
+  unsigned long tickStart = millis();
   fl_tick();
+  unsigned long tickElapsed = millis() - tickStart;
+  if (tickElapsed > 500) {
+    Serial.printf("*** fl_tick() took %lums ***\n", tickElapsed);
+  }
+
+  // Deferred settings publish (cannot publish reliably inside MQTT callback)
+  if (pendingSettingsPublish) {
+    pendingSettingsPublish = false;
+    publishSettings();
+  }
+
+  // Deferred Telegram notifications — send one per loop, but yield to
+  // settings requests (Telegram HTTP calls block for ~2s each)
+  if (!pendingSettingsPublish) {
+    for (int i = 0; i < 3; i++) {
+      if (pendingNotifications[i].pending) {
+        pendingNotifications[i].pending = false;
+        fl_sendFaultNotification(pendingNotifications[i].pump,
+                                 pendingNotifications[i].faultType,
+                                 pendingNotifications[i].current);
+        break;  // Only one per loop iteration
+      }
+    }
+  }
 
   // ===== CONTACTOR FEEDBACK (DI1-DI3) =====
   for (int i = 0; i < NUM_PUMPS; i++) {
@@ -1310,16 +1366,22 @@ void loop() {
           p.startCommand = false;
           Serial.printf("Schedule: Pump %d outside allowed hours\n", p.id);
         }
-        p.wasWithinSchedule = scheduleAllows;
       }
+      // Always track schedule state — even when schedule is disabled.
+      // Prevents stale wasWithinSchedule causing unexpected auto-start
+      // if schedule is re-enabled while outside the window.
+      p.wasWithinSchedule = scheduleAllows;
     }
 
     // Update DO outputs per pump
+    // Uses scheduleAllows already computed above (avoids redundant isWithinSchedule call)
     for (int i = 0; i < NUM_PUMPS; i++) {
       Pump& p = pumps[i];
-      bool desiredDO = (p.startCommand && p.state != FAULT && isWithinSchedule(p));
+      bool desiredDO = (p.startCommand && p.state != FAULT && p.wasWithinSchedule);
+      // Always enforce contactor state — don't rely on lastDOState tracking
+      // to catch edge cases (fault clear, schedule toggle, etc.)
+      fl_setDO(p.doContactor, desiredDO);
       if (desiredDO != p.lastDOState) {
-        fl_setDO(p.doContactor, desiredDO);
         Serial.printf("Pump %d contactor: %s\n", p.id, desiredDO ? "ON" : "OFF");
         p.lastDOState = desiredDO;
       }

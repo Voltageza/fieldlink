@@ -1,44 +1,104 @@
 # FieldLink Upgrade Progress
 
-## Current Status (2026-04-09)
+## Current Status (2026-04-13)
 
-Both devices flashed to **Eve v1.2.1** and confirmed online at home. Portal fleet dashboard fixed — devices stay online in admin fleet view.
+**Root cause found and fixed:** Modbus `readInputRegisters()` blocks for 2 seconds per call when no energy meter is connected (ModbusMaster library default timeout = 2000ms). With sensor reads every 500ms, the main loop was permanently stuck at 2s cycles — delaying all MQTT command processing (GET_SETTINGS took 27+ seconds to be received). Fix: skip Modbus reads when sensor is known offline, only retry every 30 seconds. Loop now runs at full speed (~10ms). Also fixed: Telegram notifications restricted to protection faults only (OVERCURRENT/DRY_RUN), portal device time updates live from telemetry.
 
 | Device | ID | FW | Telegram Group | Notes |
 |--------|----|-----|----------------|-------|
-| EVE #1 | FL-22F968 | **v1.2.1** | Agrico 1 (`-5222862641`) | Online, tested at home |
-| EVE #2 | FL-CC8CA0 | **v1.2.1** | Agrico 2 (`-5229237038`) | Online, tested at home |
+| EVE #1 | FL-22F968 | **v1.2.2** (modified, uncommitted) | Agrico 1 (`-5222862641`) | **At base.** Modbus skip fix applied. Loop responsive. Needs verification that GET_SETTINGS now responds quickly. |
+| EVE #2 | FL-CC8CA0 | **v1.2.1** | Agrico 2 (`-5229237038`) | On site. Ready for OTA once FL-22F968 verified. |
 
-**Blocking:** Site network at Agrico must allow outbound TCP 8883 + UDP 123 before devices can be reinstalled.
-
----
-
-## Next Session (Prioritized)
-
-1. [ ] **Get site IT to open outbound ports** at Agrico site: **TCP 8883** (HiveMQ MQTT TLS) and **UDP 123** (NTP). Without this, devices will keep dropping offline.
-2. [ ] **Reinstall both devices at Agrico site** — once port 8883 is confirmed open
-3. [ ] **Commit and tag Eve v1.2.1 firmware** — version bump + periodic status publish + auto-reconnect fix. Tag `eve-v1.2.1`, upload to Supabase Storage for future OTA.
-4. [ ] **Merge `feature/frontend-fixes` to main** in fieldlogic-portal (per-pump schedule UI goes live now that devices are on v1.2.1)
-5. [ ] Rename FL-22F968 in portal from "ADAM" to "EVE #1"
-6. [ ] Reset Pump 3 protection on FL-CC8CA0 (garbage defaults: max=33A, dry=33A, oc_delay=23s)
-7. [ ] Connect both devices to 3-phase energy meters and verify pump control
-8. [ ] Test per-pump START/STOP/RESET via portal
-9. [ ] Add customers to their respective Telegram groups
+**Next:** Verify GET_SETTINGS responds quickly after Modbus fix, then commit all changes and push.
 
 ---
 
-## Pending Changes (Not Yet Pushed — Firmware Repo)
+## Next Steps (Prioritized)
 
-- **Eve v1.2.1 firmware changes** (all local, not committed/tagged/pushed):
-  - `FW_VERSION` bumped to `1.2.1` in `eve-controller/src/main.cpp`
-  - `WiFi.setAutoReconnect(true)` in `fl_comms.cpp`
-  - Periodic "online" status publish every 60s in `fl_comms.cpp` (clears stale LWT)
-  - `FL_MQTT_STATUS_INTERVAL_MS` constant added to `fl_comms.h`
-- **Portal `feature/frontend-fixes` branch** — per-pump schedule UI (pump tabs above schedule card, Save All Pumps button). Merge to main after confirming devices work at site.
+1. [ ] **Verify GET_SETTINGS responds quickly** — open serial monitor, click Refresh in portal, confirm `MQTT CMD:` + `Settings published` appears within 1-2 seconds
+2. [ ] **Verify portal receives settings** — check browser console for `Received settings from device:` log after clicking Refresh
+3. [ ] **Commit all firmware + portal changes** — eve-controller (Modbus skip, deferred publish, notification filter) + shared FieldLinkCore (Telegram timeout, Modbus skip) + portal (reconnect fix, live time, notification filter)
+4. [ ] **Upload new firmware binary to Supabase Storage** for OTA
+5. [ ] **OTA FL-CC8CA0 to v1.2.2** — only after FL-22F968 fully verified
+6. [ ] **Author + ship Eve v1.2.3** with latent fixes:
+   - RX-only staleness detector in `fl_comms.cpp`
+   - `StaticJsonDocument<256>` → `<512>` in `internalMqttCallback`
+7. [ ] Rename FL-22F968 in portal from "ADAM" to "EVE #1"
+8. [ ] Reset Pump 3 protection on FL-CC8CA0 (garbage defaults)
+9. [ ] Apply deferred publish + Modbus skip fixes to pump-controller project (Adam devices)
+10. [ ] Connect both devices to 3-phase energy meters and verify pump control
+11. [ ] Test per-pump START/STOP/RESET via portal
+12. [ ] Add customers to their respective Telegram groups
+
+---
+
+## Pending Changes (Not Yet Pushed)
+
+### Firmware (eve-controller + shared FieldLinkCore) — uncommitted, flashed to FL-22F968
+- **Modbus offline skip** (`fl_modbus.cpp`) — when sensor is offline and fail count exceeded, skip `readInputRegisters()` and only retry every 30 seconds. Eliminates 2-second blocking timeout on every loop iteration when no energy meter connected.
+- **Loop timing debug** (`main.cpp`) — logs `*** SLOW LOOP: xxxms ***` if loop exceeds 1 second, logs `*** fl_tick() took xxxms ***` if tick exceeds 500ms. Can be removed before release.
+- **Deferred GET_SETTINGS publish** — `publishSettings()` called from `loop()` via `pendingSettingsPublish` volatile flag instead of inline in MQTT callback
+- **Telegram notifications only for protection faults** — `triggerFault()` only queues Telegram for OVERCURRENT and DRY_RUN (not SENSOR_FAULT). SENSOR_FAULT still sets fault state but doesn't trigger HTTP calls
+- **Deferred Telegram notifications** — `PendingNotification` struct + queue, one per loop iteration
+- **3-second HTTP timeout** on Telegram calls (`http.setTimeout(3000)`) in `fl_telegram.cpp`
+- **v1.2.3 fixes queued (not yet authored):**
+  - RX-only staleness detector in `fl_comms.cpp`
+  - `StaticJsonDocument<256>` → `<512>` in `internalMqttCallback`
+
+### Portal (fieldlogic-portal) — uncommitted local changes
+- **MQTT reconnect re-subscribes to `currentDeviceId`** — fixes admin losing subscription when `devices` array is empty
+- **`requestDeviceSettings()` re-subscribes to telemetry** — belt-and-suspenders
+- **Eve device time updates live from telemetry** — `device-time-eve` now updated from every telemetry `time` field, not just GET_SETTINGS responses
+- **Portal fault notifications filtered** — only OVERCURRENT/DRY_RUN trigger Telegram, not SENSOR_FAULT
+- **Debug logging** — `[MQTT-IN]` logs all messages from current device
+
+### Diagnostic scripts (keep local)
+- `mqtt_cmd_diagnose.py`, `mqtt_get_settings_probe.py`, `mqtt_ota_watch.py`, `mqtt_reset_probe.py`, `mqtt_ota_eve.py`
 
 ---
 
 ## Completed
+
+### Session 2026-04-13 (GET_SETTINGS root cause found — Modbus timeout blocking loop)
+- [x] **Root cause: Modbus timeout blocking main loop** — `fl_modbusNode.readInputRegisters()` has a 2000ms timeout (ModbusMaster library default). With no energy meter connected, every sensor read blocks for 2 full seconds. Sensor reads happen every 500ms (`SENSOR_READ_INTERVAL_MS`), but actual loop cycle was 2027ms. This delayed all MQTT command processing — GET_SETTINGS took 27+ seconds to be received and processed.
+- [x] **Fix: Modbus offline skip** — `fl_readSensors()` now skips `readInputRegisters()` when sensor is known offline (`fl_modbusFailCount >= FL_MAX_MODBUS_FAILURES`), only retrying every 30 seconds. Loop now runs at full speed (~10ms).
+- [x] **Fix: Loop timing diagnostics** — added `SLOW LOOP` and `fl_tick()` timing logs to `loop()`. Confirmed `fl_tick()` was fast; the 2s delay was from Modbus reads in the sensor section.
+- [x] **Firmware: Deferred GET_SETTINGS publish** — `publishSettings()` via `pendingSettingsPublish` volatile flag in `loop()`.
+- [x] **Firmware: Telegram only for protection faults** — SENSOR_FAULT excluded from notifications. Only OVERCURRENT and DRY_RUN trigger Telegram.
+- [x] **Firmware: 3s HTTP timeout on Telegram** — `http.setTimeout(3000)`.
+- [x] **Firmware: Deferred Telegram queue** — `PendingNotification` struct, one per loop iteration, GET_SETTINGS takes priority.
+- [x] **Portal: MQTT reconnect re-subscribes to `currentDeviceId`** — fixes admin losing subscription when `devices` array is empty.
+- [x] **Portal: Eve device time updates live** — `device-time-eve` updated from every telemetry `time` field, not just GET_SETTINGS.
+- [x] **Portal: Fault notifications filtered** — only OVERCURRENT/DRY_RUN, matching firmware.
+- [x] **Portal: Debug logging** — `[MQTT-IN]` logs all messages from current device.
+- [ ] **Pending verification** — need to confirm GET_SETTINGS responds within 1-2 seconds after Modbus skip fix.
+
+### Session 2026-04-12 (schedule redesign + admin pump count + serial diagnosis)
+- [x] **Portal: Schedule UI redesigned for Eve devices** — replaced single start/end with per-pump table view. All pumps visible at once with Enabled toggle, Start time, End time per row. Single "Save Schedules" button sends `SET_SCHEDULE` with `pump` parameter for each active pump. Adam (single-pump) devices keep the original simple layout.
+- [x] **Portal: Day selection removed from schedule** — schedules now apply every day (`days: 127`), matching customer use case. Day checkboxes removed from both Adam and Eve schedule cards.
+- [x] **Portal: Admin-only Active Pumps feature** — admin can set 1, 2, or 3 active pumps per Eve device from Device Config. Inactive pumps hidden from: pump cards, schedule table rows, and protection tabs. Non-admin users cannot see or change this setting.
+- [x] **Supabase: `active_pumps` column added** — `ALTER TABLE devices ADD COLUMN active_pumps integer DEFAULT 3 CHECK (active_pumps >= 1 AND active_pumps <= 3)`. Admin UPDATE RLS policy added for cross-user device updates.
+- [x] **Portal: `viewDevice()` fetches `active_pumps` directly** — avoids stale cache issues when navigating via Fleet (where `devices` array may not include the column). Direct Supabase query on each device view.
+- [x] **Portal: Fleet query updated** — `loadFleetDashboard()` now fetches `active_pumps`, `pump_names`, and `hardware_types` for registered devices.
+- [x] **Portal: Pump names applied to schedule table** — `applyPumpNames()` now also updates `sched-name-{n}` cells in the schedule table.
+- [x] **FL-22F968 MQTT subscription restored** — USB serial boot log confirmed `Subscribed to: fieldlink/FL-22F968/#` after reset. GET_SETTINGS probe confirmed round-trip: command received on serial, settings response published via MQTT. Dead subscription was transient — resolved by power cycle.
+- [x] **FL-22F968 reflashed with correct Telegram chat ID** — `secrets.h` had correct `-5222862641` but previous build had `0`. Rebuilt and flashed via USB. Telegram notifications now working (HTTP 200 confirmed on serial).
+- [ ] **Configuration settings not persisting** — protection/threshold/delay settings not saving correctly. Needs investigation (portal commands vs firmware NVS).
+
+### Session 2026-04-11/12 (settings-bleed bug — portal fixed, firmware blocked)
+- [x] **Root-caused the "pump settings bleed across tabs" bug** — two stacked issues:
+  1. **Portal-side (display):** `switchProtectionTab(n)` silently no-oped if `window.eveProtectionData[p+n]` was missing, leaving form fields with stale values from the previously-selected tab → looked like saves bled across pumps.
+  2. **Firmware-side (response never arrives):** v1.2.1's `GET_SETTINGS` handler allocated a 2KB `StaticJsonDocument<1024>` + 1KB char buffer on the stack **inside the MQTT/TLS callback chain** — same pattern that caused commit `86ac3e2`. Stack overflow meant no settings response ever published, so the portal's cache was forever null.
+- [x] **Portal fix deployed** (`fieldlogic-portal` commit `78d61b3`) — `openDeviceConfig()` wrapper re-requests `GET_SETTINGS` every time Configure opens, and `switchProtectionTab()` clears the form + re-requests if cache is missing instead of silently no-oping.
+- [x] **Eve v1.2.2 firmware built and on Supabase Storage** (`fieldlink` commit `d6586cb`) — `GET_SETTINGS` handler's `StaticJsonDocument<1024> resp` and `char buf[1024]` both made `static` to match the pattern from `86ac3e2`. CI ran, binary uploaded to `firmware-releases/EVE_ESP32S3/v1.2.2.bin`, `curl -sI` confirms 1,192,336 bytes HTTP 200.
+- [x] **Discovered latent deadlock: FL-22F968 MQTT subscription is dead** — can't OTA because commands aren't reaching `eveMqttCallback` at all. Proven via `mqtt_reset_probe.py`: RESET pump 1 produces no `s1` transition even though `resetFault()` is unconditional. Power cycle **did not fix it** (confirmed by user — `f1` state changed from `SENSOR_FAULT` to `DRY_RUN` between runs, proving boot happened). Device web UI shows MQTT: Connected, so TCP/TLS is fine — something is wrong between the CONNECT and receiving delivered messages.
+- [x] **Identified latent bug in staleness detector** (`fl_comms.cpp:382-390`) — `fl_lastMqttActivity` is bumped on every outgoing telemetry publish (`main.cpp:1374`), so the 90s staleness timeout can never fire even when the subscription is dead. Device can TX-loop forever without self-healing. Fix queued for v1.2.3 (see Next Session #6).
+- [x] **Diagnostic scripts added** to project root (uncommitted):
+  - `mqtt_cmd_diagnose.py` — sequential STATUS → GET_SETTINGS → UPDATE_FIRMWARE, watches per-phase telemetry counts
+  - `mqtt_get_settings_probe.py` — focused STATUS vs GET_SETTINGS round-trip test
+  - `mqtt_ota_watch.py` — OTA trigger + 90s telemetry watcher, flags `{"status":"updating"}` + version transitions
+  - `mqtt_reset_probe.py` — RESET probe, the one that found the dead subscription
+  - `mqtt_ota_eve.py` — one-shot OTA trigger, updated to take `<device_id> <version>` args
 
 ### Session 2026-04-09 (firmware flash + portal fleet fix)
 - [x] **Both devices flashed to Eve v1.2.1** via web UI (`/update`). FL-CC8CA0 flashed first (secrets.h already set), then rebuilt with FL-22F968's chat ID and flashed second. Both confirmed online.
@@ -130,6 +190,8 @@ Both devices flashed to **Eve v1.2.1** and confirmed online at home. Portal flee
 - [x] Startup animation, contactor badge
 - [x] Firmware management page (push OTA to devices)
 - [x] Per-pump rename (pump_names JSONB in Supabase)
+- [x] Per-pump schedule table (Eve) — all pumps visible at once, daily schedule
+- [x] Admin-only active pump count — hide unused pumps across entire UI
 
 ### Infrastructure
 - [x] GitHub Actions CI/CD for Eve and Pump firmwares (with Telegram secrets)
