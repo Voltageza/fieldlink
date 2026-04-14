@@ -60,7 +60,7 @@ static void internalMqttCallback(char* topic, byte* payload, unsigned int length
 
   // Try parsing as JSON for UPDATE_FIRMWARE
   // Cast to const char* to force copy mode — preserves cmd buffer for project callback
-  static StaticJsonDocument<256> doc;  // static to reduce stack usage
+  static StaticJsonDocument<512> doc;  // static to reduce stack usage
   doc.clear();
   DeserializationError error = deserializeJson(doc, (const char*)cmd);
 

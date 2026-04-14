@@ -26,7 +26,7 @@
 /* ================= PROJECT CONFIG ================= */
 
 #define FW_NAME    "ESP32 Eve 3-Pump Controller"
-#define FW_VERSION "1.2.2"
+#define FW_VERSION "1.2.3"
 #define HW_TYPE    "EVE_ESP32S3"
 
 #define NUM_PUMPS 3
@@ -1293,20 +1293,8 @@ void setup() {
 void loop() {
   unsigned long now = millis();
 
-  // Debug: detect slow loops (>1s means something is blocking)
-  static unsigned long lastLoopTime = 0;
-  if (lastLoopTime > 0 && (now - lastLoopTime) > 1000) {
-    Serial.printf("*** SLOW LOOP: %lums since last iteration ***\n", now - lastLoopTime);
-  }
-  lastLoopTime = now;
-
   // Library tick: OTA, serial, MQTT reconnect+loop, DI read
-  unsigned long tickStart = millis();
   fl_tick();
-  unsigned long tickElapsed = millis() - tickStart;
-  if (tickElapsed > 500) {
-    Serial.printf("*** fl_tick() took %lums ***\n", tickElapsed);
-  }
 
   // Deferred settings publish (cannot publish reliably inside MQTT callback)
   if (pendingSettingsPublish) {
