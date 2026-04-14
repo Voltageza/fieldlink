@@ -2,12 +2,12 @@
 
 ## Current Status (2026-04-14)
 
-Both Eve devices running **v1.2.2** with all safety fixes, Modbus skip, deferred GET_SETTINGS, HTTPS OTA support, and filtered Telegram notifications. Both verified via device checklist.
+Both Eve devices running **v1.2.3** with all safety fixes, Modbus skip, deferred GET_SETTINGS, HTTPS OTA support, filtered Telegram notifications, larger JSON buffer, and clean production logs. Both verified via device checklist.
 
 | Device | ID | FW | Telegram Group | Notes |
 |--------|----|-----|----------------|-------|
-| EVE #1 | FL-22F968 | **v1.2.2** (commit `43a12f0`) | Agrico 1 (`-5222862641`) | **At base.** All fixes applied. GET_SETTINGS 0.4s. Fully verified. |
-| EVE #2 | FL-CC8CA0 | **v1.2.2** (USB flash 2026-04-14) | Agrico 2 (`-5229237038`) | **At base.** USB flashed after OTA failed. GET_SETTINGS 0.6s. Fully verified. Pump 2/3 protection settings need reset. |
+| EVE #1 | FL-22F968 | **v1.2.3** (commit `0094958`) | Agrico 1 (`-5222862641`) | **At base.** All fixes applied. GET_SETTINGS <1s. Fully verified. |
+| EVE #2 | FL-CC8CA0 | **v1.2.3** (commit `0094958`) | Agrico 2 (`-5229237038`) | **At base.** GET_SETTINGS 0.5s. Fully verified. Pump 2/3 protection settings need reset via portal. |
 
 **No blockers.** Both devices operational. Ready for field deployment after Pump 2/3 settings cleanup on FL-CC8CA0.
 
@@ -15,15 +15,11 @@ Both Eve devices running **v1.2.2** with all safety fixes, Modbus skip, deferred
 
 ## Next Steps (Prioritized)
 
-1. [x] ~~**USB flash FL-CC8CA0**~~ — Done. Flashed via COM3, verified with checklist. GET_SETTINGS 0.6s.
-2. [ ] **Commit + push OTA fix** (`fl_ota.cpp` — WiFiClientSecure for HTTPS, MQTT disconnect before download). Rebuild CI binary for future OTA reliability.
-3. [ ] **Reset Pump 2/3 protection on FL-CC8CA0** — garbage defaults (P2: max_I=77, dry_I=1; P3: max_I=33, dry_I=33). Set via portal.
-4. [ ] **Author + ship Eve v1.2.3** with remaining fixes:
-   - RX-only staleness detector in `fl_comms.cpp` — prevents dead MQTT subscription (root cause of OTA failure)
-   - `StaticJsonDocument<256>` → `<512>` in `internalMqttCallback`
-   - Remove loop timing debug logs before release
-4. [ ] Rename FL-22F968 in portal from "ADAM" to "EVE #1"
-5. [ ] ~~Reset Pump 3 protection on FL-CC8CA0~~ — merged into step 3 above
+1. [x] ~~**USB flash FL-CC8CA0**~~ — Done. Flashed via COM3, verified with checklist.
+2. [x] ~~**Commit + push OTA fix**~~ — Done. Commit `9a757e3`.
+3. [x] ~~**Author + ship Eve v1.2.3**~~ — Done. JSON buffer 256→512, removed debug logs. Commit `0094958`. Both devices flashed and verified.
+4. [ ] **Reset Pump 2/3 protection on FL-CC8CA0** — garbage defaults (P2: oc=off, dry=off, max_I=33; P3: max_I=33, dry_I=33). Set via portal.
+5. [ ] Rename FL-22F968 in portal from "ADAM" to "EVE #1"
 6. [ ] Apply deferred publish + Modbus skip fixes to pump-controller project (Adam devices)
 7. [ ] Connect both devices to 3-phase energy meters and verify pump control
 8. [ ] Test per-pump START/STOP/RESET via portal
@@ -34,14 +30,7 @@ Both Eve devices running **v1.2.2** with all safety fixes, Modbus skip, deferred
 
 ## Pending Changes (Not Yet Pushed)
 
-### Firmware (uncommitted — OTA fix only)
-- **OTA HTTPS fix** (`fl_ota.cpp`) — uses WiFiClientSecure for HTTPS firmware URLs, disconnects MQTT before download to free TLS memory, 30s HTTP timeout
-- **v1.2.3 fixes queued (not yet authored):**
-  - RX-only staleness detector in `fl_comms.cpp` — force MQTT reconnect after 90s of no inbound messages
-  - `StaticJsonDocument<256>` → `<512>` in `internalMqttCallback`
-  - Remove loop timing debug logs
-
-### Recently committed (2026-04-14)
+### All firmware committed and pushed (2026-04-14)
 - **Firmware** (`43a12f0`): Modbus offline skip, safety fixes (contactor enforcement, stale sensor zeroing, schedule tracking), deferred GET_SETTINGS + Telegram, notification filter, loop timing debug
 - **Portal** (`f970231`): MQTT reconnect subscription, live device time, notification filter, debug logging
 - **Tool** (`43a12f0`): `tools/device_checklist.py` — automated device health checker
