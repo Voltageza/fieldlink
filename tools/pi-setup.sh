@@ -46,8 +46,10 @@ sudo apt-get upgrade -y -qq
 log "Installing Python 3 and dependencies..."
 sudo apt-get install -y -qq python3 python3-pip python3-venv git screen minicom usbutils
 
-log "Installing Python packages..."
-pip3 install --user paho-mqtt requests
+log "Installing Python packages (via apt — PEP 668 safe)..."
+# Newer Raspberry Pi OS (Bookworm+) blocks system-wide pip per PEP 668.
+# Use apt packages instead of pip3 install.
+sudo apt-get install -y -qq python3-paho-mqtt python3-requests
 
 # ============================================
 # 3. PlatformIO Core CLI
