@@ -1,15 +1,17 @@
 # FieldLink Upgrade Progress
 
-## Current Status (2026-04-14)
+## Current Status (2026-04-17)
 
-Both Eve devices running **v1.2.3** production firmware. All safety fixes applied. Hardware I/O verified on both devices via test mode. Portal debug logs cleaned. Pump-controller project updated to v3.2.0 with same fixes.
+Both Eve devices running **v1.2.3** production firmware. All safety fixes applied. Hardware I/O verified on both devices via test mode. Portal debug logs cleaned. Pump-controller project updated to v3.2.0 with same fixes. Portal admin rename bugs fixed (pump + device).
 
 | Device | ID | FW | Telegram Group | Notes |
 |--------|----|-----|----------------|-------|
 | EVE #1 | FL-22F968 | **v1.2.3** (production) | Agrico 1 (`-5222862641`) | **At base.** I/O tested — all 6 relays verified (3 contactors + 3 fault alarms). Renamed to "EVE #1" in Supabase. |
 | EVE #2 | FL-CC8CA0 | **v1.2.3** (production) | Agrico 2 (`-5229237038`) | **At base.** I/O tested — all 6 relays verified. Protection reset to sensible defaults. |
 
-**No blockers.** Both devices ready for field deployment. Raspberry Pi 3 planned for remote site management.
+**Raspberry Pi 3:** SSH configured (user: `jaco`, hostname: `fieldlink-pi`, IP: `192.168.101.185`). Setup script partially run — errored on PlatformIO install due to PEP 668. Script fixed and pushed (`7331ae8`). Manual PlatformIO install needed to complete setup.
+
+**No blockers.** Both devices ready for field deployment.
 
 ---
 
@@ -23,10 +25,13 @@ Both Eve devices running **v1.2.3** production firmware. All safety fixes applie
 6. [x] ~~**Apply fixes to pump-controller**~~ — v3.2.0. Commit `08b77db`.
 7. [x] ~~**Remove portal debug logs**~~ — `[MQTT-IN]` removed. Commit `a0fbd2d` (portal repo).
 8. [x] ~~**Hardware I/O test mode**~~ — `feature/io-test` branch. TEST_DO, TEST_DI, TEST_PUMP_SIM commands. Interactive CLI `tools/io_test.py`. All 6 relays verified on both devices.
-9. [ ] **Setup Raspberry Pi 3 for remote site management** — SSH + Tailscale + PlatformIO + serial monitor. One Eve device connected via USB for remote flashing.
-10. [ ] Connect both devices to 3-phase energy meters and verify pump control
-11. [ ] Test per-pump START/STOP/RESET via portal (with real energy meter)
-12. [ ] Add customers to their respective Telegram groups
+9. [x] ~~**Portal: Pump rename bug fixed**~~ — admin couldn't save pump names. Root cause: `devices.find()` returned null + `user_id` filter blocked cross-user updates. Commit `48845b5`.
+10. [x] ~~**Portal: Device rename bug fixed**~~ — same pattern as pump rename. Commit `4446a35`.
+11. [ ] **Setup Raspberry Pi 3 for remote site management** — SSH working (user: `jaco`, IP: `192.168.101.185`). Setup script partially run — PlatformIO install needs manual fix (PEP 668). Tailscale not yet configured.
+12. [ ] Connect both devices to 3-phase energy meters and verify pump control
+13. [ ] Test per-pump START/STOP/RESET via portal (with real energy meter)
+14. [ ] Add customers to their respective Telegram groups
+15. [ ] Consider local Pi architecture (Mosquitto + Nginx + SQLite) vs cloud — see session notes 2026-04-16
 
 ---
 
@@ -47,6 +52,15 @@ Both Eve devices running **v1.2.3** production firmware. All safety fixes applie
 ---
 
 ## Completed
+
+### Session 2026-04-15–17 (Portal admin fixes, Pi 3 setup, local architecture discussion)
+- [x] **Portal: Pump rename bug fixed** — admin couldn't save pump names. `devices.find()` returned null for admin viewing other users' devices (when `showAllDevices=false`, `devices` array is empty). Also `.eq('user_id', currentUser.id)` blocked admin updates to other users' devices. Fixed by fetching `pump_names` directly from Supabase if not in array, and removing `user_id` filter from update. Commit `48845b5`.
+- [x] **Portal: Device rename bug fixed** — same root cause as pump rename. Admin couldn't rename devices belonging to other users. Same fix pattern applied. Commit `4446a35`.
+- [x] **Pi setup script created** — `tools/pi-setup.sh` automates full Raspberry Pi setup: system update, Python, PlatformIO, Tailscale, USB serial permissions (udev rules for ESP32-S3), git clone, helper scripts (fl-check, fl-monitor, fl-flash, fl-build, fl-test, fl-ota, fl-pull, fl-ports). Run via `curl -sL .../pi-setup.sh | bash`. Commit `42875eb`.
+- [x] **Pi setup script PEP 668 fix** — newer Raspberry Pi OS (Bookworm) blocks `pip3 install` system-wide. Changed to `apt-get install python3-paho-mqtt python3-requests`. Commit `7331ae8`.
+- [x] **Raspberry Pi 3 SSH configured** — Pi Imager v2.0.3 used. User: `jaco`, hostname: `fieldlink-pi`, IP: `192.168.101.185`. SSH connection confirmed working.
+- [ ] **Pi setup incomplete** — script errored on PlatformIO install (PEP 668 in get-platformio.py). Manual install needed: `python3 -m venv ~/.platformio/penv && ~/.platformio/penv/bin/pip install -U platformio`. Then re-run setup script for remaining steps (Tailscale, git clone, helper scripts).
+- [x] **Local Pi architecture discussed** — user considering replacing cloud stack (HiveMQ + Supabase + GitHub Pages) with local Pi running Mosquitto + Nginx + SQLite. Hybrid approach recommended: local MQTT broker + portal on Pi, Tailscale for remote access, keep Telegram for alerts and GitHub for code. Biggest effort: replacing Supabase REST calls in portal (~1-2 days). Decision pending.
 
 ### Session 2026-04-14 (I/O test mode, production cleanup, Pi planning)
 - [x] **I/O test mode created** — `feature/io-test` branch with MQTT commands: `TEST_DO` (cycle/individual relay control), `TEST_DI` (read inputs), `TEST_DI_MONITOR` (continuous change reporting), `TEST_PUMP_SIM` (fake sensor data to bypass SENSOR_FAULT), `TEST_ALL_OFF` (safety kill switch)
